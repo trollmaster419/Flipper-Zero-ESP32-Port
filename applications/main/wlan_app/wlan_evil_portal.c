@@ -745,14 +745,7 @@ static void karma_start(const char* base_ssid) {
     }
     s_karma_enabled = true;
     s_karma_run = true;
-    static StaticTask_t karma_tcb;
-    size_t stack_size = 3072;
-    StackType_t* stack = heap_caps_malloc(stack_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if(!stack) stack = heap_caps_malloc(stack_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if(stack) {
-        s_karma_task = xTaskCreateStatic(karma_task, "EpKarma", stack_size, NULL, 4, stack, &karma_tcb);
-    }
-    if(!s_karma_task) {
+    if(xTaskCreate(karma_task, "EpKarma", 3072, NULL, 4, &s_karma_task) != pdPASS) {
         ESP_LOGE(TAG, "[karma] task create FAILED");
         s_karma_run = false;
         s_karma_enabled = false;
@@ -933,8 +926,7 @@ static void evil_portal_start_worker(void* arg) {
         s_html_len = 0;
     }
     if(cfg->html && cfg->html_len > 0) {
-        s_html_buf = heap_caps_malloc(cfg->html_len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if(!s_html_buf) s_html_buf = malloc(cfg->html_len + 1);
+        s_html_buf = malloc(cfg->html_len + 1);
         if(s_html_buf) {
             memcpy(s_html_buf, cfg->html, cfg->html_len);
             s_html_buf[cfg->html_len] = 0;
@@ -954,14 +946,7 @@ static void evil_portal_start_worker(void* arg) {
 
     ESP_LOGI(TAG, "[worker] starting DNS task");
     s_dns_run = true;
-    static StaticTask_t dns_tcb;
-    size_t dstack_size = DNS_TASK_STACK;
-    StackType_t* dstack = heap_caps_malloc(dstack_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if(!dstack) dstack = heap_caps_malloc(dstack_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if(dstack) {
-        s_dns_task = xTaskCreateStatic(dns_task, "EpDns", dstack_size, NULL, 4, dstack, &dns_tcb);
-    }
-    if(!s_dns_task) {
+    if(xTaskCreate(dns_task, "EpDns", DNS_TASK_STACK, NULL, 4, &s_dns_task) != pdPASS) {
         ESP_LOGE(TAG, "  DNS task create FAILED");
         s_dns_run = false;
         stop_http();
