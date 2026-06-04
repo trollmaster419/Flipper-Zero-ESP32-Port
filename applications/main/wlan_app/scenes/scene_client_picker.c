@@ -29,7 +29,7 @@ static void cp_sort_by_rssi(WlanApp* app) {
 }
 
 static void cp_clear_clients(WlanApp* app) {
-    memset(app->deauth_clients, 0, sizeof(app->deauth_clients));
+    memset(app->deauth_clients, 0, sizeof(WlanDeauthClient) * WLAN_APP_MAX_DEAUTH_CLIENTS);
     app->deauth_client_count = 0;
 }
 

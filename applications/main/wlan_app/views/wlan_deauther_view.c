@@ -12,6 +12,10 @@ static void wlan_deauther_view_draw_callback(Canvas* canvas, void* _model) {
     canvas_clear(canvas);
 
     wlan_view_draw_header(canvas, model->title[0] ? model->title : "Deauth");
+    if(model->smart_mode) {
+        canvas_set_font(canvas, FontSecondary);
+        canvas_draw_str_aligned(canvas, 126, 15, AlignRight, AlignBottom, "[SMART]");
+    }
 
     // "SSID" Label (FontPrimary, fett) + WiFi-Name (FontSecondary).
     canvas_set_font(canvas, FontPrimary);
@@ -85,6 +89,16 @@ static bool wlan_deauther_view_input_callback(InputEvent* event, void* context) 
         }
         if(event->key == InputKeyDown) {
             view_dispatcher_send_custom_event(vd, WlanAppCustomEventDeautherAuto);
+            return true;
+        }
+        if(event->key == InputKeyLeft) {
+            view_dispatcher_send_custom_event(vd, WlanAppCustomEventDeautherSmartToggle);
+            return true;
+        }
+    }
+    if(event->type == InputTypeLong) {
+        if(event->key == InputKeyLeft || event->key == InputKeyUp) {
+            view_dispatcher_send_custom_event(vd, WlanAppCustomEventDeautherSmartToggle);
             return true;
         }
     }

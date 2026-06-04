@@ -11,6 +11,8 @@ enum MainIndex {
     MainIndexChannelSniffer = 12,
     MainIndexChannelEvilPortal = 13,
     MainIndexUpdateSd = 14,
+    MainIndexChannelSmartDeauth = 15,
+    MainIndexChannelKarma = 16,
 };
 
 static void wlan_app_scene_main_submenu_cb(void* context, uint32_t index) {
@@ -56,6 +58,12 @@ void wlan_app_scene_main_on_enter(void* context) {
         wlan_app_scene_main_submenu_cb, app);
     submenu_add_item(
         app->submenu, "Deauth", MainIndexChannelDeauth,
+        wlan_app_scene_main_submenu_cb, app);
+    submenu_add_item(
+        app->submenu, "Smart Deauth", MainIndexChannelSmartDeauth,
+        wlan_app_scene_main_submenu_cb, app);
+    submenu_add_item(
+        app->submenu, "Karma Attack", MainIndexChannelKarma,
         wlan_app_scene_main_submenu_cb, app);
     submenu_add_item(
         app->submenu, "Sniffer", MainIndexChannelSniffer,
@@ -115,6 +123,18 @@ bool wlan_app_scene_main_on_event(void* context, SceneManagerEvent event) {
             app->channel_mode_active = true;
             if(app->channel_action_channel == 0) app->channel_action_channel = 1;
             scene_manager_next_scene(app->scene_manager, WlanAppSceneNetworkDeauth);
+            consumed = true;
+            break;
+        case MainIndexChannelSmartDeauth:
+            app->channel_mode_active = true;
+            if(app->channel_action_channel == 0) app->channel_action_channel = 1;
+            scene_manager_next_scene(app->scene_manager, WlanAppSceneSmartDeauth);
+            consumed = true;
+            break;
+        case MainIndexChannelKarma:
+            app->channel_mode_active = true;
+            if(app->channel_action_channel == 0) app->channel_action_channel = 1;
+            scene_manager_next_scene(app->scene_manager, WlanAppSceneKarma);
             consumed = true;
             break;
         case MainIndexChannelSniffer:

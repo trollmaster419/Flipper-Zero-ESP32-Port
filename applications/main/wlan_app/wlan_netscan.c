@@ -388,7 +388,15 @@ static void hostname_worker_fn(void* arg) {
 void wlan_netscan_start_hostname_resolve(void) {
     if(s_hostname_task) return;
     s_hostname_stop = false;
-    xTaskCreate(hostname_worker_fn, "WlanHostHN", 4096, NULL, 4, &s_hostname_task);
+    static StaticTask_t s_hostname_tcb;
+    size_t stack_size = 4096;
+    StackType_t* stack = heap_caps_malloc(stack_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if(!stack) stack = heap_caps_malloc(stack_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if(stack) {
+        s_hostname_task = xTaskCreateStatic(hostname_worker_fn, "WlanHostHN", stack_size, NULL, 4, stack, &s_hostname_tcb);
+    } else {
+        ESP_LOGE(TAG, "Cannot alloc hostname stack");
+    }
 }
 
 bool wlan_netscan_hostname_done(void) {

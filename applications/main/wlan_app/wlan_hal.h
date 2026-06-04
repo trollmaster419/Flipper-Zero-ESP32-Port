@@ -4,12 +4,20 @@
 #include <stdint.h>
 #include <esp_wifi.h>
 
-/** Starte den WiFi-Stack im STA-Mode. Stoppt zuvor ggf. den BT-Stack
- *  (geteiltes Radio). Idempotent — gibt true zurück, wenn der Stack bereits
- *  läuft oder erfolgreich initialisiert wurde. */
+/** Stop BT radio before starting WiFi (shared radio). Must be called
+ *  from a Furi task context (furi_record_open). Idempotent. */
+void wlan_hal_bt_stop(void);
+
+/** Restart BT radio after WiFi stop. Must be called from a Furi task
+ *  context (furi_record_open). Idempotent. */
+void wlan_hal_bt_restore(void);
+
+/** Starte den WiFi-Stack im STA-Mode. Setzt voraus, dass BT bereits
+ *  gestoppt wurde (wlan_hal_bt_stop). Idempotent. */
 bool wlan_hal_start(void);
 
-/** Beende den WiFi-Stack und stelle BT wieder her. Idempotent. */
+/** Beende den WiFi-Stack. Idempotent. Stellt BT nicht wieder her
+ *  (caller muss wlan_hal_bt_restore rufen). */
 void wlan_hal_stop(void);
 
 bool wlan_hal_is_started(void);

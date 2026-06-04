@@ -15,7 +15,7 @@
 #include <stdlib.h>
 
 #define TAG "WlanHal"
-#define WLAN_HAL_WORKER_STACK 8192
+#define WLAN_HAL_WORKER_STACK 4096
 
 typedef enum {
     WCMD_INIT_START,
@@ -59,7 +59,7 @@ typedef struct {
             wifi_promiscuous_cb_t cb;
         } set_promisc;
         struct {
-            uint8_t buf[64];
+            uint8_t* buf;   // heap-allocated, freed by consumer
             uint16_t len;
         } send_raw;
         struct {
@@ -83,7 +83,6 @@ static volatile uint32_t s_own_netmask = 0;
 
 static QueueHandle_t s_cmd_queue = NULL;
 static TaskHandle_t s_worker_task = NULL;
-static StackType_t* s_worker_stack = NULL;
 static StaticTask_t s_worker_buf;
 
 static void wlan_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
@@ -118,10 +117,20 @@ static void wlan_worker_fn(void* arg) {
         case WCMD_INIT_START:
             if(!s_netif_inited) {
                 esp_netif_init();
-                esp_event_loop_create_default();
+                esp_err_t ev_err = esp_event_loop_create_default();
+                if(ev_err != ESP_OK && ev_err != ESP_ERR_INVALID_STATE) {
+                    ESP_LOGE(TAG, "event_loop_create: %s", esp_err_to_name(ev_err));
+                    ok = false;
+                    break;
+                }
                 s_netif_sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
                 if(!s_netif_sta) {
                     s_netif_sta = esp_netif_create_default_wifi_sta();
+                    if(!s_netif_sta) {
+                        ESP_LOGE(TAG, "esp_netif_create_default_wifi_sta failed");
+                        ok = false;
+                        break;
+                    }
                 }
                 s_netif_inited = true;
             }
@@ -232,17 +241,23 @@ static void wlan_worker_fn(void* arg) {
             // CB immer setzen (auch auf NULL), sonst bleibt ein zuvor
             // installierter RX-Callback aus einem anderen Subsystem aktiv.
             esp_wifi_set_promiscuous_rx_cb(cmd.set_promisc.enable ? cmd.set_promisc.cb : NULL);
+            if (cmd.set_promisc.enable) {
+                wifi_promiscuous_filter_t filter = {
+                    .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA
+                };
+                esp_wifi_set_promiscuous_filter(&filter);
+            }
             esp_wifi_set_promiscuous(cmd.set_promisc.enable);
             break;
 
         case WCMD_SEND_RAW: {
-            // en_sys_seq=true: System füllt die Sequence-Number selbst → keine
-            // duplizierten Frames mit fixem Seq aus dem Template.
+            // en_sys_seq=true: System füllt die Sequence-Number selbst
             esp_err_t tx_err = esp_wifi_80211_tx(
                 WIFI_IF_STA, cmd.send_raw.buf, cmd.send_raw.len, true);
             if(tx_err != ESP_OK) {
                 ESP_LOGD(TAG, "80211_tx: %s", esp_err_to_name(tx_err));
             }
+            free(cmd.send_raw.buf);
             break;
         }
 
@@ -259,7 +274,8 @@ static void wlan_worker_fn(void* arg) {
             esp_wifi_scan_get_ap_num(&count);
             if(count > cmd.scan.max_count) count = cmd.scan.max_count;
             if(count > 0) {
-                *cmd.scan.out_records = malloc(count * sizeof(wifi_ap_record_t));
+                *cmd.scan.out_records = heap_caps_malloc(
+                    count * sizeof(wifi_ap_record_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
                 if(*cmd.scan.out_records) {
                     esp_wifi_scan_get_ap_records(&count, *cmd.scan.out_records);
                 } else {
@@ -294,19 +310,32 @@ static bool wlan_ensure_worker(void) {
     s_cmd_queue = xQueueCreate(4, sizeof(WlanCmd));
     if(!s_cmd_queue) return false;
 
-    s_worker_stack = heap_caps_malloc(
-        WLAN_HAL_WORKER_STACK * sizeof(StackType_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if(!s_worker_stack) {
+    // Try internal RAM first, fall back to PSRAM (SPIRAM)
+    size_t stack_size = WLAN_HAL_WORKER_STACK * sizeof(StackType_t);
+    StackType_t* stack = heap_caps_malloc(stack_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if(!stack) {
+        stack = heap_caps_malloc(stack_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+
+    if(!stack) {
         vQueueDelete(s_cmd_queue);
         s_cmd_queue = NULL;
-        ESP_LOGE(TAG, "Cannot alloc worker stack");
+        ESP_LOGE(TAG, "Cannot alloc worker stack (%u bytes)", (unsigned)stack_size);
         return false;
     }
 
     s_worker_task = xTaskCreateStaticPinnedToCore(
         wlan_worker_fn, "WlanWorker", WLAN_HAL_WORKER_STACK,
-        NULL, 5, s_worker_stack, &s_worker_buf, 0);
-    return s_worker_task != NULL;
+        NULL, 5, stack, &s_worker_buf, 0);
+
+    if(!s_worker_task) {
+        heap_caps_free(stack);
+        vQueueDelete(s_cmd_queue);
+        s_cmd_queue = NULL;
+        ESP_LOGE(TAG, "Cannot create worker task");
+        return false;
+    }
+    return true;
 }
 
 bool wlan_hal_ensure_worker(void) {
@@ -322,15 +351,26 @@ static void wlan_send_cmd_sync(WlanCmd* cmd) {
     }
 }
 
-bool wlan_hal_start(void) {
-    if(s_started) return true;
-
+void wlan_hal_bt_stop(void) {
     Bt* bt = furi_record_open(RECORD_BT);
     s_bt_was_on = bt_is_enabled(bt);
     if(s_bt_was_on) {
         bt_stop_stack(bt);
     }
     furi_record_close(RECORD_BT);
+}
+
+void wlan_hal_bt_restore(void) {
+    if(s_bt_was_on) {
+        Bt* bt = furi_record_open(RECORD_BT);
+        bt_start_stack(bt);
+        furi_record_close(RECORD_BT);
+        s_bt_was_on = false;
+    }
+}
+
+bool wlan_hal_start(void) {
+    if(s_started) return true;
 
     if(!wlan_ensure_worker()) return false;
 
@@ -351,13 +391,6 @@ void wlan_hal_stop(void) {
         wlan_send_cmd_sync(&cmd);
         s_started = false;
         ESP_LOGI(TAG, "WiFi stopped");
-    }
-
-    if(s_bt_was_on) {
-        Bt* bt = furi_record_open(RECORD_BT);
-        bt_start_stack(bt);
-        furi_record_close(RECORD_BT);
-        s_bt_was_on = false;
     }
 }
 
@@ -459,11 +492,16 @@ void wlan_hal_set_promiscuous(bool enable, wifi_promiscuous_cb_t cb) {
 }
 
 bool wlan_hal_send_raw(const uint8_t* data, uint16_t len) {
-    if(!s_started || !s_cmd_queue || len > 64) return false;
+    if(!s_started || !s_cmd_queue || len > 2304) return false;
+    uint8_t* buf = malloc(len);
+    if(!buf) return false;
+    memcpy(buf, data, len);
     WlanCmd cmd = {.type = WCMD_SEND_RAW, .done = NULL, .result = NULL};
-    memcpy(cmd.send_raw.buf, data, len);
+    cmd.send_raw.buf = buf;
     cmd.send_raw.len = len;
-    return xQueueSend(s_cmd_queue, &cmd, 0) == pdTRUE;
+    bool ok = xQueueSend(s_cmd_queue, &cmd, 0) == pdTRUE;
+    if(!ok) free(buf);
+    return ok;
 }
 
 bool wlan_hal_run_in_worker(WlanHalWorkerFn fn, void* arg) {
@@ -638,12 +676,16 @@ void wlan_hal_beacon_spam_start(WlanHalBeaconMode mode, const char* base_ssid) {
     }
     s_beacon_frames = 0;
     s_beacon_active = true;
-    BaseType_t rc = xTaskCreate(beacon_spam_task, "BeaconSpam",
-        4096, NULL, 5, &s_beacon_task);
-    if(rc != pdPASS) {
+    static StaticTask_t beacon_tcb;
+    size_t stack_size = 4096;
+    StackType_t* stack = heap_caps_malloc(stack_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if(!stack) stack = heap_caps_malloc(stack_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if(stack) {
+        s_beacon_task = xTaskCreateStatic(beacon_spam_task, "BeaconSpam", stack_size, NULL, 5, stack, &beacon_tcb);
+    }
+    if(!s_beacon_task) {
         s_beacon_active = false;
-        s_beacon_task = NULL;
-        ESP_LOGE(TAG, "beacon_spam: xTaskCreate failed");
+        ESP_LOGE(TAG, "beacon_spam: cannot alloc stack");
     }
 }
 

@@ -12,6 +12,7 @@ typedef struct {
     uint32_t frames_sent;
     bool running;       // OK gehalten ODER Auto aktiv
     bool auto_mode;     // Soft-Button rechts → "Auto" / "Stop"
+    bool smart_mode;    // Smart-Deauth aktiv
     bool channel_mode;  // true → Up/Down ändern Channel, kein Targets-Soft-Button
     bool scanning;      // true → Worker scannt gerade Channel-APs
     char status_msg[40]; // Temporäre Statuszeile (z.B. "No APs on channel"), "" = leer

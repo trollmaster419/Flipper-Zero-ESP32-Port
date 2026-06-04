@@ -209,12 +209,21 @@ static esp_err_t pn532_i2c_init(void) {
         FURI_LOG_I(TAG, "I2C bus %d already initialized, reusing", BOARD_NFC_I2C_PORT);
         err = ESP_OK;
     }
+
+    /* Disable the I2C hardware timeout (default ~13 SCL clocks ≈ 200µs at 100kHz).
+     * PN532 may clock-stretch for milliseconds during LowVBat wakeup; the default
+     * timeout aborts the transaction before the PN532 can respond. */
+    esp_err_t tout_err = i2c_set_timeout(BOARD_NFC_I2C_PORT, 0xFFFFF);
+    if(tout_err != ESP_OK) {
+        FURI_LOG_W(TAG, "i2c_set_timeout failed: %s", esp_err_to_name(tout_err));
+    }
+
     return err;
 }
 
 /** Wait for PN532 ready: IRQ pin LOW or I2C RDY byte polling */
 static bool pn532_wait_ready(uint32_t timeout_ms) {
-#ifdef BOARD_PIN_NFC_IRQ
+#if defined(BOARD_PIN_NFC_IRQ) && BOARD_PIN_NFC_IRQ >= 0
     uint32_t start = furi_get_tick();
     while((furi_get_tick() - start) < timeout_ms) {
         if(gpio_get_level(BOARD_PIN_NFC_IRQ) == 0) return true;
@@ -368,7 +377,7 @@ FuriHalNfcError furi_hal_nfc_init(void) {
     esp_timer_create(&btx_args, &block_tx_timer);
 
     /* Configure IRQ pin */
-#ifdef BOARD_PIN_NFC_IRQ
+#if defined(BOARD_PIN_NFC_IRQ) && BOARD_PIN_NFC_IRQ >= 0
     gpio_config_t irq_conf = {
         .pin_bit_mask = (1ULL << BOARD_PIN_NFC_IRQ),
         .mode = GPIO_MODE_INPUT,
@@ -378,7 +387,7 @@ FuriHalNfcError furi_hal_nfc_init(void) {
 #endif
 
     /* Ensure RST is HIGH (PN532 powered from board power-on) */
-#ifdef BOARD_PIN_NFC_RST
+#if defined(BOARD_PIN_NFC_RST) && BOARD_PIN_NFC_RST >= 0
     gpio_config_t rst_conf = {
         .pin_bit_mask = (1ULL << BOARD_PIN_NFC_RST),
         .mode = GPIO_MODE_OUTPUT,
