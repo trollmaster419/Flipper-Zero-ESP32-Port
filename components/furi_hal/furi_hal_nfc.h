@@ -536,6 +536,13 @@ bool furi_hal_nfc_pn532_mf_is_authed(void);
  */
 void furi_hal_nfc_pn532_mf_deauth(void);
 
+/**
+ * @brief Set NFC pins configuration (stored in NVS, applied at next boot).
+ *
+ * @param config  0 = default (G26/G25), 1 = alternate (G32/G33), 2 = disabled
+ */
+void furi_hal_nfc_set_pins_config(uint8_t config);
+
 #ifdef __cplusplus
 }
 #endif

@@ -193,7 +193,7 @@ static void night_shift_end_changed(VariableItem* item) {
 // --- NIGHT SHIFT END ---
 
 // --- LED COLOR (T-Embed Plus WS2812 ring) ---
-#define LED_COLOR_COUNT 10
+#define LED_COLOR_COUNT 11
 const char* const led_color_text[LED_COLOR_COUNT] = {
     "Off",
     "Red",
@@ -205,6 +205,7 @@ const char* const led_color_text[LED_COLOR_COUNT] = {
     "White",
     "Orange",
     "Purple",
+    "OppoOrange"
 };
 /* Each value is packed 0x00RRGGBB at full saturation per active channel.
  * The actual hardware output = (channel * settings.led_brightness), so the
@@ -222,6 +223,7 @@ const uint32_t led_color_value[LED_COLOR_COUNT] = {
     0x00FFFFFF, /* White */
     0x00FFA500, /* Orange — #FFA500 */
     0x008F00FF, /* Purple — #8F00FF */
+    0x00005AFF  /* Opposite of orange - #005AFF*/
 };
 
 static void led_color_changed(VariableItem* item) {
@@ -313,10 +315,10 @@ static void led_speed_changed(VariableItem* item) {
  * hue-cycle timer in the notification service. Used by both
  * "UI Background" (fg_color = field around UI elements, default Orange) and
  * "UI Foreground" (bg_color = drawn UI elements, default Black). */
-#define UI_COLOR_COUNT 11
+#define UI_COLOR_COUNT 12
 const char* const ui_color_text[UI_COLOR_COUNT] = {
-    "Black", "Orange", "Red", "Green", "Blue", "Cyan",
-    "Magenta", "Yellow", "White", "Purple", "Spectrum",
+    "Black", "Orange", "Red", "Green", "Blue", "Teal",
+    "Pink", "Yellow", "White", "Mauve", "OppoOrange", "Spectrum",
 };
 
 static void ui_bg_color_changed(VariableItem* item) {

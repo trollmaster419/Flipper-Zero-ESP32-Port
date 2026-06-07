@@ -47,5 +47,30 @@ const GpioPin gpio_nrf24_cs = {.port = NULL, .pin = BOARD_PIN_NRF24_CSN};
 #else
 const GpioPin gpio_nrf24_cs = {.port = NULL, .pin = UINT16_MAX};
 #endif
+
+/* Bruce firmware SPI pinout (boards that don't define these get UINT16_MAX) */
+#ifndef BOARD_PIN_SPI_BRUCE_MOSI
+#define BOARD_PIN_SPI_BRUCE_MOSI UINT16_MAX
+#endif
+#ifndef BOARD_PIN_SPI_BRUCE_MISO
+#define BOARD_PIN_SPI_BRUCE_MISO UINT16_MAX
+#endif
+#ifndef BOARD_PIN_SPI_BRUCE_SCK
+#define BOARD_PIN_SPI_BRUCE_SCK UINT16_MAX
+#endif
+#ifndef BOARD_PIN_SPI_BRUCE_CS
+#define BOARD_PIN_SPI_BRUCE_CS UINT16_MAX
+#endif
+#ifndef BOARD_PIN_SPI_BRUCE_GDO0
+#define BOARD_PIN_SPI_BRUCE_GDO0 UINT16_MAX
+#endif
+const GpioPin gpio_spi_bruce_mosi = {.port = NULL, .pin = BOARD_PIN_SPI_BRUCE_MOSI};
+const GpioPin gpio_spi_bruce_miso = {.port = NULL, .pin = BOARD_PIN_SPI_BRUCE_MISO};
+const GpioPin gpio_spi_bruce_sck  = {.port = NULL, .pin = BOARD_PIN_SPI_BRUCE_SCK};
+const GpioPin gpio_spi_bruce_cs   = {.port = NULL, .pin = BOARD_PIN_SPI_BRUCE_CS};
+const GpioPin gpio_spi_bruce_gdo0 = {.port = NULL, .pin = BOARD_PIN_SPI_BRUCE_GDO0};
+
+/* Sentinel — always unmapped, used for Disabled pin configs */
+const GpioPin gpio_null = {.port = NULL, .pin = UINT16_MAX};
 const GpioPin gpio_ibutton  = {.port = NULL, .pin = UINT16_MAX};
 const GpioPin gpio_speaker  = {.port = NULL, .pin = UINT16_MAX};

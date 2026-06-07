@@ -28,6 +28,11 @@
 #include <driver/gpio.h>
 #include <esp_timer.h>
 #include <string.h>
+#include <nvs.h>
+
+/* NVS namespace and key for NFC pin configuration */
+#define NFC_NVS_NAMESPACE "nfc_hal"
+#define NFC_NVS_KEY       "pins_cfg"
 
 /* ──────────────────────────── PN532 Protocol Constants ──────────────────── */
 
@@ -169,6 +174,9 @@ static bool felica_listener_configured = false;
 /* PN532 Mifare Classic native auth state */
 static bool pn532_mf_authed = false;
 
+/* NFC pins config: 0=default(G26/G25), 1=alternate(G32/G33), 2=disabled */
+static uint8_t nfc_pins_cfg = 0;
+
 /* ──────────────────────────── Timer Callbacks ────────────────────────────── */
 
 static void fwt_timer_cb(void* arg) {
@@ -189,12 +197,16 @@ static void block_tx_timer_cb(void* arg) {
 /* ──────────────────────────── PN532 I2C Low-Level ───────────────────────── */
 
 static esp_err_t pn532_i2c_init(void) {
+    /* Use configurable pins if set, otherwise board defaults */
+    gpio_num_t sda = (nfc_pins_cfg == 1) ? GPIO_NUM_32 : BOARD_PIN_NFC_SDA;
+    gpio_num_t scl = (nfc_pins_cfg == 1) ? GPIO_NUM_33 : BOARD_PIN_NFC_SCL;
+
     /* I2C bus may already be initialized by furi_hal_power (shared QWIIC/NFC pins).
      * Try to install; if already running, just reuse it. */
     i2c_config_t conf = {
         .mode = I2C_MODE_MASTER,
-        .sda_io_num = BOARD_PIN_NFC_SDA,
-        .scl_io_num = BOARD_PIN_NFC_SCL,
+        .sda_io_num = sda,
+        .scl_io_num = scl,
         .sda_pullup_en = GPIO_PULLUP_ENABLE,
         .scl_pullup_en = GPIO_PULLUP_ENABLE,
         .master.clk_speed = 100000,
@@ -205,8 +217,9 @@ static esp_err_t pn532_i2c_init(void) {
         /* Fresh install — configure pins */
         i2c_param_config(BOARD_NFC_I2C_PORT, &conf);
     } else {
-        /* Already installed (by power or touch) — reuse as-is */
-        FURI_LOG_I(TAG, "I2C bus %d already initialized, reusing", BOARD_NFC_I2C_PORT);
+        /* Already installed (by power or touch) — reconfigure pins for current cfg */
+        i2c_param_config(BOARD_NFC_I2C_PORT, &conf);
+        i2c_set_pin(BOARD_NFC_I2C_PORT, sda, scl, true, true, I2C_MODE_MASTER);
         err = ESP_OK;
     }
 
@@ -365,6 +378,30 @@ static FuriHalNfcError pn532_status_to_error(uint8_t status) {
 /* ──────────────────────────── HAL Public API ─────────────────────────────── */
 
 FuriHalNfcError furi_hal_nfc_init(void) {
+    /* Read NFC pin config from NVS (set by momentum app or default) */
+    nvs_handle_t nvs_handle;
+    esp_err_t nvs_err = nvs_open(NFC_NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+    if(nvs_err == ESP_OK) {
+        uint8_t cfg = 0;
+        if(nvs_get_u8(nvs_handle, NFC_NVS_KEY, &cfg) == ESP_OK) {
+            nfc_pins_cfg = (cfg < 3) ? cfg : 0;
+        }
+        nvs_close(nvs_handle);
+    }
+
+    /* If NFC is disabled in config, skip hardware init entirely.
+     * Release I2C bus so G26/G25 can be reused (e.g. IR on G26). */
+    if(nfc_pins_cfg == 2) {
+        FURI_LOG_I(TAG, "NFC HAL: disabled by config");
+        esp_err_t del_err = i2c_driver_delete(BOARD_NFC_I2C_PORT);
+        if(del_err == ESP_OK) {
+            FURI_LOG_I(TAG, "I2C bus %d deleted (NFC disabled)", BOARD_NFC_I2C_PORT);
+            gpio_reset_pin(BOARD_PIN_NFC_SDA);
+            gpio_reset_pin(BOARD_PIN_NFC_SCL);
+        }
+        return FuriHalNfcErrorNone;
+    }
+
     FURI_LOG_I(TAG, "Initializing NFC HAL (PN532 I2C)");
 
     nfc_mutex = furi_mutex_alloc(FuriMutexTypeNormal);
@@ -1888,6 +1925,54 @@ void furi_hal_nfc_pn532_mf_deauth(void) {
     pn532_mf_authed = false;
 }
 
+void furi_hal_nfc_set_pins_config(uint8_t config) {
+    if(config > 2) config = 0;
+    nfc_pins_cfg = config;
+
+    /* Persist to NVS so it takes effect at next boot */
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open(NFC_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if(err == ESP_OK) {
+        nvs_set_u8(nvs_handle, NFC_NVS_KEY, config);
+        nvs_commit(nvs_handle);
+        nvs_close(nvs_handle);
+    }
+
+    if(config == 2 && nfc_hal_ready) {
+        /* De-init NFC immediately (setting to disabled) */
+        FURI_LOG_I(TAG, "NFC HAL: de-initializing (set to disabled)");
+        nfc_hal_ready = false;
+        if(nfc_mutex) {
+            furi_mutex_free(nfc_mutex);
+            nfc_mutex = NULL;
+        }
+        if(nfc_event_flags) {
+            furi_event_flag_free(nfc_event_flags);
+            nfc_event_flags = NULL;
+        }
+        if(fwt_timer) {
+            esp_timer_delete(fwt_timer);
+            fwt_timer = NULL;
+        }
+        if(block_tx_timer) {
+            esp_timer_delete(block_tx_timer);
+            block_tx_timer = NULL;
+        }
+        esp_err_t del_err = i2c_driver_delete(BOARD_NFC_I2C_PORT);
+        if(del_err == ESP_OK) {
+            FURI_LOG_I(TAG, "I2C bus %d deleted (NFC disabled at runtime)", BOARD_NFC_I2C_PORT);
+            gpio_reset_pin(BOARD_PIN_NFC_SDA);
+            gpio_reset_pin(BOARD_PIN_NFC_SCL);
+        }
+    } else if(config != 2 && nfc_hal_ready) {
+        /* Re-init I2C with new pins so the change takes effect immediately */
+        FURI_LOG_I(TAG, "NFC HAL: re-initializing I2C (pins config changed to %u)", config);
+        pn532_i2c_init();
+        uint8_t sam_cmd[] = {PN532_CMD_SAMCONFIGURATION, 0x01, 0x14, 0x01};
+        pn532_send_command(sam_cmd, sizeof(sam_cmd), NULL, NULL, 1000);
+    }
+}
+
 #else /* !BOARD_HAS_NFC */
 
 /* ── No NFC hardware: all functions return errors or no-ops ────────────── */
@@ -1963,5 +2048,6 @@ FuriHalNfcError furi_hal_nfc_pn532_mf_auth(uint8_t b, const uint8_t* k, uint8_t 
 }
 bool furi_hal_nfc_pn532_mf_is_authed(void) { return false; }
 void furi_hal_nfc_pn532_mf_deauth(void) {}
+void furi_hal_nfc_set_pins_config(uint8_t config) { UNUSED(config); }
 
 #endif /* BOARD_HAS_NFC */

@@ -70,6 +70,12 @@ extern const GpioPin gpio_ext_pa6; /* CC1101 MISO - GPIO17 */
 extern const GpioPin gpio_ext_pa7; /* CC1101 MOSI - GPIO3 */
 extern const GpioPin gpio_cc1101_g0; /* CC1101 GDO0 - GPIO23 */
 extern const GpioPin gpio_nrf24_cs; /* NRF24 CSN -- T-Embed: GPIO44 */
+extern const GpioPin gpio_spi_bruce_mosi;
+extern const GpioPin gpio_spi_bruce_miso;
+extern const GpioPin gpio_spi_bruce_sck;
+extern const GpioPin gpio_spi_bruce_cs;
+extern const GpioPin gpio_spi_bruce_gdo0;
+extern const GpioPin gpio_null; /* Always unmapped (pin=UINT16_MAX) */
 extern const GpioPin gpio_ibutton;
 extern const GpioPin gpio_speaker;
 

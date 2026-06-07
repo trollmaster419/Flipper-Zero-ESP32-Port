@@ -636,18 +636,19 @@ static void notification_led_off_timer_cb(void* context) {
  *
  * Defaults: Background = Orange (idx 1), Foreground = Black (idx 0). Together
  * those preserve the stock Flipper black-on-orange look. */
-#define UI_COLOR_SPECTRUM_INDEX 10
+#define UI_COLOR_SPECTRUM_INDEX 11
 const uint16_t ui_color_value[UI_COLOR_SPECTRUM_INDEX] = {
     UI_RGB(0x00, 0x00, 0x00), /* Black */
     UI_RGB(0xFF, 0xA5, 0x00), /* Orange — default for Background */
-    UI_RGB(0xFF, 0x00, 0x00), /* Red */
-    UI_RGB(0x00, 0xFF, 0x00), /* Green */
-    UI_RGB(0x00, 0x00, 0xFF), /* Blue */
-    UI_RGB(0x00, 0xFF, 0xFF), /* Cyan */
-    UI_RGB(0xFF, 0x1D, 0xCE), /* Magenta — matches LED preset */
-    UI_RGB(0xFF, 0xFF, 0x00), /* Yellow */
-    UI_RGB(0xFF, 0xFF, 0xFF), /* White */
-    UI_RGB(0x8F, 0x00, 0xFF), /* Purple — matches LED preset */
+    UI_RGB(0xF3, 0x8B, 0xA8), /* Catppuccin Red */
+    UI_RGB(0xA6, 0xE3, 0xA1), /* Catppuccin Green */
+    UI_RGB(0x89, 0xB4, 0xFA), /* Catppuccin Blue */
+    UI_RGB(0x94, 0xE2, 0xD5), /* Catppuccin Teal */
+    UI_RGB(0xF5, 0xC2, 0xE7), /* Catppuccin Pink */
+    UI_RGB(0xF9, 0xE2, 0xAF), /* Catppuccin Yellow */
+    UI_RGB(0xCD, 0xD6, 0xF4), /* Catppuccin Text */
+    UI_RGB(0xCB, 0xA6, 0xF7), /* Catppuccin Mauve */
+    UI_RGB(0x00, 0x5A, 0xFF)  /* OppoOrange */
 };
 
 /* Inline RGB888→RGB565+byte-swap for the spectrum tick (avoids macro re-eval). */
