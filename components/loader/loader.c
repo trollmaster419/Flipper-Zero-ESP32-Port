@@ -5,6 +5,7 @@
 #include <flipper_application/api_hashtable/api_hashtable.h>
 #include <storage/storage.h>
 #include <toolbox/path.h>
+#include <btshim.h>
 
 extern const ElfApiInterface* const firmware_api_interface;
 
@@ -270,6 +271,34 @@ static LoaderStatus loader_start_external_fap(
         FlipperApplicationPreloadStatus preload_status =
             flipper_application_preload(app, path);
 
+        if(preload_status == FlipperApplicationPreloadStatusNotEnoughMemory &&
+           !loader->app.ble_released) {
+            /* The FAP's executable sections didn't fit the fragmented internal exec heap.
+             * Tear down the BLE stack (frees ~60 KB of contiguous internal RAM) and try once
+             * more. BLE is restored when the FAP exits (loader_do_app_closed). This is the only
+             * way large FAPs (e.g. protopirate) fit on the classic ESP32. */
+            FURI_LOG_W(TAG, "FAP out of exec RAM; releasing BLE stack and retrying");
+            Bt* bt = furi_record_open(RECORD_BT);
+            bt_stop_stack(bt);
+            furi_record_close(RECORD_BT);
+            loader->app.ble_released = true;
+
+            /* preload partially allocated then bailed; rebuild the app object cleanly */
+            flipper_application_free(app);
+            app = flipper_application_alloc(storage, firmware_api_interface);
+            if(app) {
+                preload_status = flipper_application_preload(app, path);
+            }
+        }
+
+        if(!app) {
+            if(error_message) {
+                furi_string_set(error_message, "Out of memory loading FAP");
+            }
+            FURI_LOG_E(TAG, "Out of memory loading %s", path);
+            break;
+        }
+
         if(preload_status != FlipperApplicationPreloadStatusSuccess) {
             const FlipperApplicationManifest* manifest = flipper_application_get_manifest(app);
             if(error_message) {
@@ -348,6 +377,15 @@ static LoaderStatus loader_start_external_fap(
         if(app) {
             flipper_application_free(app);
         }
+        /* FAP never started its thread, so loader_do_app_closed won't run; restore BLE here if we
+         * tore it down during the failed load attempt. */
+        if(loader->app.ble_released) {
+            FURI_LOG_I(TAG, "Restoring BLE stack after failed big-FAP load");
+            Bt* bt = furi_record_open(RECORD_BT);
+            bt_start_stack(bt);
+            furi_record_close(RECORD_BT);
+            loader->app.ble_released = false;
+        }
     }
 
     furi_record_close(RECORD_STORAGE);
@@ -394,8 +432,6 @@ static LoaderMessageLoaderStatusResult loader_do_start_by_name(
     LoaderMessageLoaderStatusResult status;
     status.value = LoaderStatusOk;
 
-    esp_rom_printf("\r\n[LDR] start_by_name name='%s'\r\n", name ? name : "(null)");
-
     if(name == NULL) return status;
 
     do {
@@ -419,10 +455,7 @@ static LoaderMessageLoaderStatusResult loader_do_start_by_name(
 
         const FlipperInternalApplication* app =
             loader_find_application_by_name(name);
-        esp_rom_printf("[LDR] find_app('%s')=%p\r\n", name, (void*)app);
         if(app) {
-            esp_rom_printf("[LDR] found name='%s' appid='%s' stack=%u\r\n",
-                app->name, app->appid, (unsigned)app->stack_size);
             loader_start_internal_app(loader, app, args);
             break;
         }
@@ -475,6 +508,16 @@ static void loader_do_app_closed(Loader* loader) {
         furi_thread_free(loader->app.thread);
     }
     loader->app.thread = NULL;
+
+    if(loader->app.ble_released) {
+        /* This FAP had BLE torn down to free exec RAM; bring the stack back now that the FAP's
+         * code has been freed. */
+        FURI_LOG_I(TAG, "Restoring BLE stack after big FAP");
+        Bt* bt = furi_record_open(RECORD_BT);
+        bt_start_stack(bt);
+        furi_record_close(RECORD_BT);
+        loader->app.ble_released = false;
+    }
 
     FURI_LOG_I(
         TAG, "Application stopped. Free heap: %zu", memmgr_get_free_heap());

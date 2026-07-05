@@ -517,6 +517,16 @@ int32_t desktop_srv(void* p) {
 
     desktop_init_settings(desktop);
 
+    /* Load Momentum settings at boot so the qFlipper UART0<->RPC bridge comes up
+     * with the desktop when qflipper_enabled, instead of only when the main menu
+     * is first opened (loader_menu_app_alloc). Safe to do inline here: storage is
+     * already mounted (desktop_init_settings just read from it — RECORD_STORAGE
+     * isn't created until storage_srv finishes mounting), so the persisted value
+     * is read correctly. momentum_settings_load() calls cli_uart_bridge_start()
+     * when enabled; extern-declared to avoid a component dependency. */
+    extern void momentum_settings_load(void);
+    momentum_settings_load();
+
     scene_manager_next_scene(desktop->scene_manager, DesktopSceneMain);
 
     if(desktop_pin_code_is_set()) {

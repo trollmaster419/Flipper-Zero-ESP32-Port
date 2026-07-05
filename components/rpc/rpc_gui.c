@@ -221,28 +221,82 @@ static void
         return;
     }
 
-    InputEvent event = {
-        .key = (int32_t)request->content.gui_send_input_event_request.key,
-        .type = (int32_t)request->content.gui_send_input_event_request.type,
-    };
+    int32_t key = (int32_t)request->content.gui_send_input_event_request.key;
+    int32_t type = (int32_t)request->content.gui_send_input_event_request.type;
 
-    // Event sequence shenanigans
-    event.sequence_source = INPUT_SEQUENCE_SOURCE_SOFTWARE;
-    if(event.type == InputTypePress) {
-        rpc_gui->input_counter++;
-        if(rpc_gui->input_counter == RPC_GUI_INPUT_RESET) rpc_gui->input_counter++;
-        rpc_gui->input_key_counter[event.key] = rpc_gui->input_counter;
-    }
-    if(rpc_gui->input_key_counter[event.key] == RPC_GUI_INPUT_RESET) {
-        FURI_LOG_W(TAG, "Out of sequence input event: key %d, type %d,", event.key, event.type);
-    }
-    event.sequence_counter = rpc_gui->input_key_counter[event.key];
-    if(event.type == InputTypeRelease) {
-        rpc_gui->input_key_counter[event.key] = RPC_GUI_INPUT_RESET;
+    if(type == InputTypePress) {
+        // Automatically inject a full, clean Press-and-Release sequence with a 100ms hold time!
+        InputEvent press_event = {
+            .key = key,
+            .type = InputTypePress,
+            .sequence_source = INPUT_SEQUENCE_SOURCE_HARDWARE, // Skip all sequence gates
+            .sequence_counter = 0,
+        };
+        furi_pubsub_publish(rpc_gui->input_events, &press_event);
+
+        furi_delay_ms(100); // 100ms hardware-level hold time
+
+        InputEvent release_event = {
+            .key = key,
+            .type = InputTypeRelease,
+            .sequence_source = INPUT_SEQUENCE_SOURCE_HARDWARE,
+            .sequence_counter = 0,
+        };
+        furi_pubsub_publish(rpc_gui->input_events, &release_event);
+    } else if(type == InputTypeShort) {
+        // Short: inject Press → Short → Release to pass complementarity check
+        // and clear ongoing_input so subsequent hardware presses aren't blocked.
+        InputEvent press_event = {
+            .key = key,
+            .type = InputTypePress,
+            .sequence_source = INPUT_SEQUENCE_SOURCE_HARDWARE,
+            .sequence_counter = 0,
+        };
+        furi_pubsub_publish(rpc_gui->input_events, &press_event);
+
+        InputEvent short_event = {
+            .key = key,
+            .type = InputTypeShort,
+            .sequence_source = INPUT_SEQUENCE_SOURCE_HARDWARE,
+            .sequence_counter = 0,
+        };
+        furi_pubsub_publish(rpc_gui->input_events, &short_event);
+
+        InputEvent release_event = {
+            .key = key,
+            .type = InputTypeRelease,
+            .sequence_source = INPUT_SEQUENCE_SOURCE_HARDWARE,
+            .sequence_counter = 0,
+        };
+        furi_pubsub_publish(rpc_gui->input_events, &release_event);
+    } else if(type == InputTypeLong) {
+        // Long: inject Press → Long (Release comes from qFlipper on mouse-up)
+        InputEvent press_event = {
+            .key = key,
+            .type = InputTypePress,
+            .sequence_source = INPUT_SEQUENCE_SOURCE_HARDWARE,
+            .sequence_counter = 0,
+        };
+        furi_pubsub_publish(rpc_gui->input_events, &press_event);
+
+        InputEvent long_event = {
+            .key = key,
+            .type = InputTypeLong,
+            .sequence_source = INPUT_SEQUENCE_SOURCE_HARDWARE,
+            .sequence_counter = 0,
+        };
+        furi_pubsub_publish(rpc_gui->input_events, &long_event);
+    } else {
+        // Release, Repeat — pass through as-is
+        InputEvent event = {
+            .key = key,
+            .type = type,
+            .sequence_source = INPUT_SEQUENCE_SOURCE_HARDWARE,
+            .sequence_counter = 0,
+        };
+        furi_pubsub_publish(rpc_gui->input_events, &event);
     }
 
-    // Submit event
-    furi_pubsub_publish(rpc_gui->input_events, &event);
     rpc_send_and_release_empty(session, request->command_id, PB_CommandStatus_OK);
 }
 

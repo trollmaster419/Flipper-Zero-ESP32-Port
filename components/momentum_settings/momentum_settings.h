@@ -139,6 +139,7 @@ typedef struct {
     ScreenFrameColor rpc_color_bg;
     IrTxPin ir_tx_pin;
     NfcPins nfc_pins;
+    bool qflipper_enabled;
 } MomentumSettings;
 
 void momentum_settings_save(void);

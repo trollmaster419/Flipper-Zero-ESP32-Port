@@ -111,6 +111,12 @@ void furi_hal_bt_stop_advertising(void);
 /** Reset HAL profile state (call when BLE stack is fully stopped). */
 void furi_hal_bt_reinit(void);
 
+/** Suspend the BT controller + host stack to reclaim internal RAM (e.g. for WLAN). */
+void furi_hal_bt_suspend(void);
+
+/** Mark the BT stack ready to be re-initialized by profiles on next start. */
+void furi_hal_bt_resume(void);
+
 /* ---- Battery / power (stubs) ---- */
 
 void furi_hal_bt_update_battery_level(uint8_t battery_level);

@@ -31,6 +31,11 @@ typedef enum {
 void furi_hal_subghz_set_async_mirror_pin(const GpioPin* pin);
 const GpioPin* furi_hal_subghz_get_data_gpio(void);
 void furi_hal_subghz_init(void);
+
+/** Select which pins the CC1101 SPI bus + GDO0 use, then re-init and re-probe.
+ * config: 0 = board default CC1101 pins (disabled on boards without an onboard
+ * radio), 1 = Bruce external module pinout. Matches momentum SpiHandle enum. */
+void furi_hal_subghz_set_spi_config(uint8_t config);
 void furi_hal_subghz_sleep(void);
 void furi_hal_subghz_dump_state(void);
 void furi_hal_subghz_load_custom_preset(const uint8_t* preset_data);

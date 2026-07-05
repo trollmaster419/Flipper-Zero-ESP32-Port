@@ -18,6 +18,7 @@ typedef struct ELFFile ELFFile;
 typedef struct {
     const char* name;
     uint32_t address;
+    uint32_t size;
 } ELFMemoryMapEntry;
 
 typedef struct {
@@ -51,6 +52,13 @@ typedef enum {
 } ElfLoadSectionTableResult;
 
 typedef bool(ElfProcessSection)(File* file, size_t offset, size_t size, void* context);
+
+/* Reserve a contiguous internal-IRAM pool for FAP executable code. Must be called once at early
+ * boot (before BLE/services fragment D/IRAM). No-op on non-classic-ESP32 targets. */
+void fap_exec_pool_init(size_t requested);
+
+/* Release a previously-reserved pool back to the heap. Safe to call when no pool is active. */
+void fap_exec_pool_deinit(void);
 
 ELFFile* elf_file_alloc(Storage* storage, const ElfApiInterface* api_interface);
 void elf_file_free(ELFFile* elf_file);

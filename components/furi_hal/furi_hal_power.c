@@ -1,6 +1,7 @@
 #include "furi_hal_power.h"
 #include "furi_hal_bq27220.h"
 #include "furi_hal_bq25896.h"
+#include "furi_hal_axp192.h"
 #include "boards/board.h"
 
 #include <math.h>
@@ -302,9 +303,10 @@ void furi_hal_power_init(void) {
     /* Allow power ICs to stabilize after PWR_EN and I2C bus init */
     vTaskDelay(pdMS_TO_TICKS(50));
 
-    /* BQ27220 first (needs clean I2C bus), then BQ25896 */
+    /* BQ27220 first (needs clean I2C bus), then BQ25896, then AXP192 */
     furi_hal_bq27220_init();
     furi_hal_bq25896_init();
+    furi_hal_axp192_init();
     furi_hal_power_refresh_sample();
     if(furi_hal_bq27220_is_present()) {
         ESP_LOGI(TAG, "Fuel gauge: BQ27220 (%umV, %u%%)",
@@ -313,6 +315,13 @@ void furi_hal_power_init(void) {
     if(furi_hal_bq25896_is_present()) {
         ESP_LOGI(TAG, "Charger: BQ25896 (VBUS=%umV, VREG=%umV)",
             furi_hal_bq25896_get_vbus_voltage_mv(), furi_hal_bq25896_get_vreg_voltage_mv());
+    }
+    if(furi_hal_axp192_is_present()) {
+        ESP_LOGI(TAG, "PMU: AXP192 (BATT=%umV %s, VBUS=%umV %s)",
+            furi_hal_axp192_get_battery_voltage_mv(),
+            furi_hal_axp192_is_charging() ? "CHARGING" : "DISCHARGING",
+            furi_hal_axp192_get_vbus_voltage_mv(),
+            furi_hal_axp192_is_vbus_present() ? "PRESENT" : "ABSENT");
     }
 }
 
@@ -361,6 +370,14 @@ uint8_t furi_hal_power_get_pct(void) {
     if(furi_hal_bq27220_is_present()) {
         return furi_hal_bq27220_get_charge_pct();
     }
+    /* AXP192 PMU (M5StickC Plus2) — more accurate than ESP32 ADC */
+    if(furi_hal_axp192_is_present()) {
+        float mv = (float)furi_hal_axp192_get_battery_voltage_mv();
+        if(mv <= 0.0f) {
+            return furi_hal_axp192_is_vbus_present() ? 100 : 0;
+        }
+        return furi_hal_power_voltage_to_pct(mv / 1000.0f);
+    }
     if(!furi_hal_power.adc_handle) {
         return 100; /* No ADC, no fuel gauge → USB powered */
     }
@@ -380,12 +397,16 @@ uint8_t furi_hal_power_get_bat_health_pct(void) {
 }
 
 bool furi_hal_power_is_charging(void) {
-    /* Prefer BQ25896 charger status (like STM32), fallback to BQ27220 */
+    /* Prefer BQ25896 charger status (like STM32), fallback to BQ27220, then AXP192 */
     if(furi_hal_bq25896_is_present()) {
         return furi_hal_bq25896_is_charging();
     }
     if(furi_hal_bq27220_is_present()) {
         return furi_hal_bq27220_is_charging();
+    }
+    if(furi_hal_axp192_is_present()) {
+        /* AXP192 tells us the real charging state from its power-status reg */
+        return furi_hal_axp192_is_charging();
     }
     furi_hal_power_refresh_sample();
     return furi_hal_power_is_usb_present() && (furi_hal_power.suppress_charge == 0);
@@ -497,6 +518,9 @@ float furi_hal_power_get_battery_voltage(FuriHalPowerIC ic) {
     if(furi_hal_bq25896_is_present()) {
         return (float)furi_hal_bq25896_get_vbat_voltage_mv() / 1000.0f;
     }
+    if(furi_hal_axp192_is_present()) {
+        return (float)furi_hal_axp192_get_battery_voltage_mv() / 1000.0f;
+    }
     return furi_hal_power_get_estimated_battery_voltage();
 }
 
@@ -509,6 +533,19 @@ float furi_hal_power_get_battery_current(FuriHalPowerIC ic) {
     }
     if(furi_hal_bq27220_is_present()) {
         return (float)furi_hal_bq27220_get_current_ma() / 1000.0f;
+    }
+    if(furi_hal_axp192_is_present()) {
+        /* AXP192 has separate charge/discharge registers; return signed value
+         * where positive = charging, negative = discharging. */
+        uint16_t charge_ma = furi_hal_axp192_get_charge_current_ma();
+        if(charge_ma > 0) {
+            return (float)charge_ma / 1000.0f;
+        }
+        uint16_t discharge_ma = furi_hal_axp192_get_discharge_current_ma();
+        if(discharge_ma > 0) {
+            return -(float)discharge_ma / 1000.0f;
+        }
+        return 0.0f;
     }
     return 0.0f;
 }
@@ -536,6 +573,9 @@ float furi_hal_power_get_battery_temperature(FuriHalPowerIC ic) {
 float furi_hal_power_get_usb_voltage(void) {
     if(furi_hal_bq25896_is_present()) {
         return (float)furi_hal_bq25896_get_vbus_voltage_mv() / 1000.0f;
+    }
+    if(furi_hal_axp192_is_present()) {
+        return (float)furi_hal_axp192_get_vbus_voltage_mv() / 1000.0f;
     }
     furi_hal_power_refresh_sample();
     return furi_hal_power_is_usb_present() ? furi_hal_power.last_supply_voltage : 0.0f;

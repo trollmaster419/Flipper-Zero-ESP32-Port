@@ -1,0 +1,62 @@
+# Target-specific overrides for classic ESP32 boards (M5StickC Plus2).
+# These are merged ON TOP OF sdkconfig.defaults when building with:
+#   idf.py -B build_esp32 set-target esp32
+#   idf.py -B build_esp32 build
+#
+# Board: M5StickC Plus2 = ESP32-PICO-V3-02 (ESP32 ECO V3, rev v3.1),
+# 8MB embedded flash @ 3.3V, 2MB embedded quad PSRAM, 40MHz crystal.
+# Verified via `esptool --port <port> flash-id`.
+
+# Chip is ESP32 ECO V3 (rev v3.x). Targeting v3.0+ applies the correct errata
+# set and lets IDF drop the rev-0/1 PSRAM cache-bug workaround (which otherwise
+# forces a pile of libc into IRAM). NOTE: hand-editing CONFIG_ESP32_REV_MIN_* in
+# sdkconfig does not stick — it is a Kconfig choice with derived values; it must
+# be set here so set-target regenerates it consistently.
+CONFIG_ESP32_REV_MIN_3=y
+
+# Flash: 8MB, DIO @ 40MHz (matches the embedded flash / eFuse strapping)
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
+
+# Single-app large partition table (factory 0x400000 + littlefs 0x1E0000) fits 8MB
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_singleapp_large.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions_singleapp_large.csv"
+
+# Classic ESP32 is dual-core Xtensa — keep unicore for Furi compatibility
+CONFIG_FREERTOS_UNICORE=y
+
+# BLE: legacy 4.2 advertising (5.0 extended adv not seen by all phones)
+CONFIG_BT_BLE_42_FEATURES_SUPPORTED=y
+# CONFIG_BT_BLE_50_FEATURES_SUPPORTED is not set
+
+# PSRAM: 2MB embedded, quad mode @ 40MHz. Data/heap only — classic ESP32 has no
+# XIP-from-PSRAM, so unlike the S3 we do NOT fetch instructions or rodata from it.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_SPEED_40M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+# Allow malloc to fall back to PSRAM when internal RAM is exhausted
+CONFIG_SPIRAM_USE_MALLOC=y
+# Allocations <= 4096 bytes stay in internal RAM (DMA, TCB, stack)
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+# Reserve 32KB internal RAM for DMA/stacks/TCBs
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+# Allow .bss in PSRAM (EXT_RAM_BSS_ATTR — e.g. wlan_evil_portal DNS cache)
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+# Allow FreeRTOS task stacks in PSRAM. REQUIRED: Furi allocates service-task
+# stacks from its PSRAM pool (memmgr_alloc_from_pool -> furi_hal_memory_alloc),
+# and xTaskCreateStatic asserts via xPortcheckValidStackMem unless external
+# stacks are permitted. Without this the firmware panics right after launching
+# services and bootloops (SW_CPU_RESET). The S3 build set this too.
+CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
+
+# NFC needs 3DES (felica, mf_ultralight)
+CONFIG_MBEDTLS_DES_C=y
+
+# IRAM is tight on classic ESP32 (~128KB). Move non-ISR FreeRTOS functions to
+# flash to free IRAM — ISR-critical paths stay in IRAM. Without this the link
+# overflows iram0_0_seg by ~1.8KB with the full M5Stick app set.
+CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y

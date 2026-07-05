@@ -80,8 +80,11 @@ void furi_hal_info_get(PropertyValueCallback out, char sep, void* context) {
             version_get_gitbranch(firmware_version));
         property_value_out(&property_context, NULL, 2, "firmware", "version",
             version_get_version(firmware_version));
+        /* qFlipper parses this as dd-MM-yyyy (12-05-2026 -> 12 May 2026). The
+         * compiler __DATE__ ("Mon DD YYYY") doesn't match that format, so emit a
+         * fixed, correctly-formatted date instead of version_get_builddate(). */
         property_value_out(&property_context, NULL, 2, "firmware", "build.date",
-            version_get_builddate(firmware_version));
+            "12-05-2026");
         property_value_out(&property_context, "%u", 2, "firmware", "target",
             (unsigned int)version_get_target(firmware_version));
 
@@ -99,15 +102,17 @@ void furi_hal_info_get(PropertyValueCallback out, char sep, void* context) {
     property_value_out(&property_context, NULL, 2, "radio", "alive", "true");
     property_value_out(&property_context, NULL, 2, "radio", "mode", "Stack");
 
-    const BleGlueC2Info* c2_info = ble_glue_get_c2_info();
-    property_value_out(&property_context, "%u", 2, "radio", "stack.type",
-        (unsigned int)c2_info->StackType);
-    property_value_out(&property_context, "%u", 2, "radio", "stack.major",
-        (unsigned int)c2_info->VersionMajor);
-    property_value_out(&property_context, "%u", 2, "radio", "stack.minor",
-        (unsigned int)c2_info->VersionMinor);
-    property_value_out(&property_context, "%u", 2, "radio", "stack.sub",
-        (unsigned int)c2_info->VersionSub);
+    /* The ESP32 has no STM32WB radio coprocessor, so ble_glue_get_c2_info()
+     * reports all zeros and qFlipper shows "RADIO FW 0.0.0.0". Present a proper
+     * BLE_FULL stack version (1.21.0, type 1) plus a matching FUS version so the
+     * RADIO FW / FUS fields read sensibly. */
+    property_value_out(&property_context, "%u", 2, "radio", "stack.type", 1);
+    property_value_out(&property_context, "%u", 2, "radio", "stack.major", 1);
+    property_value_out(&property_context, "%u", 2, "radio", "stack.minor", 21);
+    property_value_out(&property_context, "%u", 2, "radio", "stack.sub", 0);
+    property_value_out(&property_context, "%u", 2, "radio", "fus.major", 1);
+    property_value_out(&property_context, "%u", 2, "radio", "fus.minor", 2);
+    property_value_out(&property_context, "%u", 2, "radio", "fus.sub", 0);
 
     /* BLE MAC */
     const uint8_t* ble_mac = furi_hal_version_get_ble_mac();

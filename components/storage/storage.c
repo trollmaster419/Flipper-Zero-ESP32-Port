@@ -18,8 +18,15 @@
 #include <unistd.h>
 
 #include <furi.h>
-#include <furi_hal_sd.h>
 #include <furi_hal_spi_bus.h>
+#include <board.h>
+
+#if BOARD_HAS_SD_CARD
+#include <furi_hal_sd.h>
+#include <esp_vfs_fat.h>
+#else
+#include "esp_littlefs.h"
+#endif
 
 #include <esp_log.h>
 
@@ -855,12 +862,25 @@ FS_Error storage_common_fs_info(
 
     if(!storage->sd_mounted) return FSE_NOT_READY;
 
+#if BOARD_HAS_SD_CARD
     FuriHalSdInfo info;
     if(furi_hal_sd_info(&info) != FuriStatusOk) return FSE_INTERNAL;
 
     if(total_space) *total_space = info.capacity;
-    /* Free space not easily available without FATFS API — estimate */
-    if(free_space) *free_space = 0;
+
+    if(free_space) {
+        uint64_t total = 0;
+        if(esp_vfs_fat_info("/sdcard", &total, free_space) != ESP_OK) {
+            *free_space = 0;
+        }
+    }
+#else
+    esp_littlefs_info_t info;
+    if(!esp_littlefs_info("littlefs", &info)) return FSE_INTERNAL;
+
+    if(total_space) *total_space = info.total_size;
+    if(free_space) *free_space = info.total_size - info.used_size;
+#endif
 
     return FSE_OK;
 }
@@ -883,14 +903,26 @@ bool storage_common_exists(Storage* storage, const char* path) {
 
 FS_Error storage_sd_format(Storage* storage) {
     (void)storage;
+#if !BOARD_HAS_SD_CARD
+    if(esp_littlefs_format("littlefs")) {
+        storage->sd_mounted = true;
+        return FSE_OK;
+    }
+    return FSE_INTERNAL;
+#else
     return FSE_NOT_IMPLEMENTED;
+#endif
 }
 
 FS_Error storage_sd_unmount(Storage* storage) {
     furi_assert(storage);
     if(!storage->sd_mounted) return FSE_NOT_READY;
 
+#if BOARD_HAS_SD_CARD
     if(!furi_hal_sd_unmount()) return FSE_INTERNAL;
+#else
+    if(!esp_littlefs_unmount()) return FSE_INTERNAL;
+#endif
 
     storage->sd_mounted = false;
     StorageEvent event = {.type = StorageEventTypeCardUnmount};
@@ -903,11 +935,19 @@ FS_Error storage_sd_mount(Storage* storage) {
     furi_assert(storage);
     if(storage->sd_mounted) return FSE_OK;
 
+#if BOARD_HAS_SD_CARD
     if(!furi_hal_sd_mount()) {
         StorageEvent event = {.type = StorageEventTypeCardMountError};
         furi_pubsub_publish(storage->pubsub, &event);
         return FSE_INTERNAL;
     }
+#else
+    if(!esp_littlefs_mount("littlefs", SD_MOUNT_POINT)) {
+        StorageEvent event = {.type = StorageEventTypeCardMountError};
+        furi_pubsub_publish(storage->pubsub, &event);
+        return FSE_INTERNAL;
+    }
+#endif
 
     storage->sd_mounted = true;
     StorageEvent event = {.type = StorageEventTypeCardMount};
@@ -924,6 +964,7 @@ FS_Error storage_sd_info(Storage* storage, SDInfo* info) {
 
     memset(info, 0, sizeof(SDInfo));
 
+#if BOARD_HAS_SD_CARD
     FuriHalSdInfo hal_info;
     if(furi_hal_sd_info(&hal_info) != FuriStatusOk) return FSE_INTERNAL;
 
@@ -941,6 +982,24 @@ FS_Error storage_sd_info(Storage* storage, SDInfo* info) {
     info->product_serial_number = hal_info.product_serial_number;
     info->manufacturing_month = hal_info.manufacturing_month;
     info->manufacturing_year = hal_info.manufacturing_year;
+#else
+    esp_littlefs_info_t lfs_info;
+    if(!esp_littlefs_info("littlefs", &lfs_info)) return FSE_INTERNAL;
+
+    info->fs_type = FST_FAT32;
+    info->kb_total = (uint32_t)(lfs_info.total_size / 1024);
+    info->kb_free = (uint32_t)((lfs_info.total_size - lfs_info.used_size) / 1024);
+    info->sector_size = lfs_info.block_size;
+    info->cluster_size = lfs_info.block_size;
+    info->manufacturer_id = 0;
+    memcpy(info->oem_id, "LF", 3);
+    memcpy(info->product_name, "LFS", 4);
+    info->product_revision_major = 2;
+    info->product_revision_minor = 5;
+    info->product_serial_number = 0;
+    info->manufacturing_month = 0;
+    info->manufacturing_year = 2024;
+#endif
 
     return FSE_OK;
 }
@@ -1043,6 +1102,90 @@ FuriPubSub* storage_get_pubsub(Storage* storage) {
     return storage->pubsub;
 }
 
+/* ---- Utility functions (from storage_external_api.c) ---- */
+
+bool storage_common_equivalent_path(Storage* storage, const char* path1, const char* path2) {
+    furi_assert(storage);
+    char real1[256], real2[256];
+    if(!storage_map_path(path1, real1, sizeof(real1))) return false;
+    if(!storage_map_path(path2, real2, sizeof(real2))) return false;
+    return strcmp(real1, real2) == 0;
+}
+
+bool storage_common_is_subdir(Storage* storage, const char* parent, const char* child) {
+    furi_assert(storage);
+    char real_parent[256], real_child[256];
+    if(!storage_map_path(parent, real_parent, sizeof(real_parent))) return false;
+    if(!storage_map_path(child, real_child, sizeof(real_child))) return false;
+
+    size_t plen = strlen(real_parent);
+    if(strncmp(real_child, real_parent, plen) != 0) return false;
+    if(real_child[plen] == '/' || real_child[plen] == '\0') return true;
+    return false;
+}
+
+FS_Error storage_common_merge(Storage* storage, const char* old_path, const char* new_path) {
+    furi_assert(storage);
+    FileInfo fileinfo;
+    FS_Error error = storage_common_stat(storage, old_path, &fileinfo);
+    if(error != FSE_OK) return error;
+
+    if(!file_info_is_dir(&fileinfo)) {
+        if(storage_common_exists(storage, new_path)) {
+            storage_common_remove(storage, new_path);
+        }
+        return storage_common_copy(storage, old_path, new_path);
+    }
+
+    if(!storage_simply_mkdir(storage, new_path)) return FSE_INTERNAL;
+
+    File* dir = storage_file_alloc(storage);
+    if(!storage_dir_open(dir, old_path)) {
+        storage_file_free(dir);
+        return FSE_INTERNAL;
+    }
+
+    char name[256];
+    FileInfo entry_info;
+    while(storage_dir_read(dir, &entry_info, name, sizeof(name))) {
+        char src[512], dst[512];
+        snprintf(src, sizeof(src), "%s/%s", old_path, name);
+        snprintf(dst, sizeof(dst), "%s/%s", new_path, name);
+        FS_Error err = storage_common_merge(storage, src, dst);
+        if(err != FSE_OK) {
+            storage_dir_close(dir);
+            storage_file_free(dir);
+            return err;
+        }
+    }
+    storage_dir_close(dir);
+    storage_file_free(dir);
+    return FSE_OK;
+}
+
+FS_Error storage_common_migrate(Storage* storage, const char* source, const char* dest) {
+    furi_assert(storage);
+    if(!storage_common_exists(storage, source)) return FSE_OK;
+    FS_Error error = storage_common_merge(storage, source, dest);
+    if(error == FSE_OK) {
+        storage_simply_remove_recursive(storage, source);
+    }
+    return error;
+}
+
+FS_Error storage_int_backup(Storage* storage, const char* dstname) {
+    UNUSED(storage);
+    UNUSED(dstname);
+    return FSE_NOT_IMPLEMENTED;
+}
+
+FS_Error storage_int_restore(Storage* storage, const char* srcname, StorageNameConverter converter) {
+    UNUSED(storage);
+    UNUSED(srcname);
+    UNUSED(converter);
+    return FSE_NOT_IMPLEMENTED;
+}
+
 /* ---- Service entry point ---- */
 
 int32_t storage_srv(void* p) {
@@ -1054,15 +1197,21 @@ int32_t storage_srv(void* p) {
     storage->pubsub = furi_pubsub_alloc();
     storage->mutex = furi_mutex_alloc(FuriMutexTypeNormal);
 
+#if BOARD_HAS_SD_CARD
     /* Try to mount SD card */
     ESP_LOGI(TAG, "Attempting SD card mount...");
     if(furi_hal_sd_mount()) {
         storage->sd_mounted = true;
         ESP_LOGI(TAG, "SD card mounted successfully");
 
-        /* Ensure the internal-storage shadow dir exists (for /int paths) */
-        if(mkdir(SD_MOUNT_POINT "/.int", 0755) != 0 && errno != EEXIST) {
-            ESP_LOGW(TAG, "mkdir %s/.int failed: %s", SD_MOUNT_POINT, strerror(errno));
+        /* Ensure the standard Flipper directories exist */
+        const char* std_dirs[] = {"/.int", "/apps_data", "/apps_assets"};
+        for(size_t i = 0; i < COUNT_OF(std_dirs); i++) {
+            char path[64];
+            snprintf(path, sizeof(path), "%s%s", SD_MOUNT_POINT, std_dirs[i]);
+            if(mkdir(path, 0755) != 0 && errno != EEXIST) {
+                ESP_LOGW(TAG, "mkdir %s failed: %s", path, strerror(errno));
+            }
         }
 
         StorageEvent event = {.type = StorageEventTypeCardMount};
@@ -1074,6 +1223,33 @@ int32_t storage_srv(void* p) {
         StorageEvent event = {.type = StorageEventTypeCardMountError};
         furi_pubsub_publish(storage->pubsub, &event);
     }
+#else
+    /* Mount LittleFS on internal flash */
+    ESP_LOGI(TAG, "Mounting LittleFS at %s...", SD_MOUNT_POINT);
+    if(esp_littlefs_mount("littlefs", SD_MOUNT_POINT)) {
+        storage->sd_mounted = true;
+        ESP_LOGI(TAG, "LittleFS mounted successfully");
+
+        /* Ensure the standard Flipper directories exist */
+        const char* std_dirs[] = {"/.int", "/apps_data", "/apps_assets"};
+        for(size_t i = 0; i < COUNT_OF(std_dirs); i++) {
+            char path[64];
+            snprintf(path, sizeof(path), "%s%s", SD_MOUNT_POINT, std_dirs[i]);
+            if(mkdir(path, 0755) != 0 && errno != EEXIST) {
+                ESP_LOGW(TAG, "mkdir %s failed: %s", path, strerror(errno));
+            }
+        }
+
+        StorageEvent event = {.type = StorageEventTypeCardMount};
+        furi_pubsub_publish(storage->pubsub, &event);
+    } else {
+        storage->sd_mounted = false;
+        ESP_LOGE(TAG, "LittleFS mount failed");
+
+        StorageEvent event = {.type = StorageEventTypeCardMountError};
+        furi_pubsub_publish(storage->pubsub, &event);
+    }
+#endif
 
     /* Register the storage record */
     furi_record_create(RECORD_STORAGE, storage);

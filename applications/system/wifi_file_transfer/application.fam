@@ -1,0 +1,10 @@
+App(
+    appid="wifi_file_transfer",
+    name="WiFi File Share",
+    apptype=FlipperAppType.MENUEXTERNAL,
+    entry_point="wifi_file_transfer_app",
+    stack_size=8 * 1024,
+    icon="A_Plugins_14",
+    order=70,
+    fap_libs=["assets"],
+)

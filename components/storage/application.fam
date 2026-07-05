@@ -4,7 +4,7 @@ App(
     apptype=FlipperAppType.SERVICE,
     entry_point="storage_srv",
     cdefines=["SRV_STORAGE"],
-    stack_size=4 * 1024,
+    stack_size=8 * 1024,
     order=40,
     sdk_headers=["storage.h"],
 )

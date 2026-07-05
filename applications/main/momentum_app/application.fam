@@ -1,0 +1,10 @@
+App(
+    appid="momentum",
+    name="Momentum",
+    apptype=FlipperAppType.APP,
+    entry_point="momentum_app",
+    requires=["gui", "notification", "storage"],
+    stack_size=4 * 1024,
+    order=65,
+    icon="A_Settings_14",
+)

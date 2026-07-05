@@ -32,4 +32,5 @@ idf_component_register(
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -Wno-error=implicit-function-declaration
     -Wno-error=builtin-declaration-mismatch
+    -Wno-error=stringop-overread
 )

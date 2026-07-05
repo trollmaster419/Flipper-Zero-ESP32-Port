@@ -27,6 +27,7 @@ APPS = [
     "loader",
     "loader_start",
     "notification_settings",
+    "storage_settings",
     "desktop",
     "archive",
     "about",
@@ -35,8 +36,9 @@ APPS = [
     "example_apps_assets",
     "example_number_input",
     "clock",
+    "momentum",
     "other_os",
-    "usb_storage",
+    "unzipper",
     "bad_usb",
     "subghz",
     "cli_subghz",
@@ -48,6 +50,8 @@ APPS = [
     "wlan",
     "nrf24",
     "ble_spam",
+    "pwnagotchi",
+    "wifi_file_transfer",
     "js_app",
     "js_event_loop",
     "js_gui",
@@ -73,11 +77,18 @@ APPS = [
     "js_subghz",
     "js_infrared",
     "js_blebeacon",
+    "qflipper_app",
     # js_serial, js_gpio, js_i2c, js_spi excluded - need HAL porting
 ]
 
 # Boards without NFC / IR hardware – exclude the corresponding apps
+_boards_without_sd = {"m5stickcplus2", "waveshare_c6_1.9", "waveshare_c6_1.47"}
+
 _board = os.environ.get("FLIPPER_BOARD", "")
+
+if _board in _boards_without_sd:
+    APP_SOURCE_OVERRIDES["storage"] = "components"
+
 _boards_without_nfc = {"waveshare_c6_1.9", "waveshare_c6_1.47"}
 _boards_without_ir = {"waveshare_c6_1.9", "waveshare_c6_1.47"}
 
@@ -89,7 +100,9 @@ _boards_without_wolf3d = {"waveshare_c6_1.9", "waveshare_c6_1.47"}
 if _board in _boards_without_nfc:
     APPS = [a for a in APPS if a != "nfc"]
 
-_boards_without_subghz = {"waveshare_c6_1.9", "waveshare_c6_1.47"}
+# waveshare_c6_1.9: external CC1101 module wired up (pins in board_waveshare_c6_1.9.h,
+# BOARD_HAS_SUBGHZ=1) → SubGHz built in. 1.47 has no module → stays excluded.
+_boards_without_subghz = {"waveshare_c6_1.47"}
 
 # NRF24 plugs into the LORA slot (T-Embed CC1101). Boards without the slot
 # don't have the required pin defines.
@@ -103,22 +116,6 @@ if _board in _boards_without_subghz:
 
 if _board in _boards_without_nrf24:
     APPS = [a for a in APPS if a != "nrf24"]
-
-# Multi-boot ("Other OS" -> Bruce) only makes sense on the 16 MB T-Embed.
-# The 4 MB Waveshare boards can't host a second firmware.
-_boards_without_multiboot = {"waveshare_c6_1.9", "waveshare_c6_1.47"}
-if _board in _boards_without_multiboot:
-    APPS = [a for a in APPS if a != "other_os"]
-
-# USB-Storage requires USB-OTG (ESP32-S3/S2 only); the Waveshare C6 has no
-# USB-OTG peripheral and the TinyUSB composite descriptor would not enumerate.
-# Note: we deliberately do NOT auto-start usb_rpc (which would install the
-# TinyUSB composite at boot) — that would kill the USB-Serial-JTAG bridge used
-# by esptool, breaking the next `./buildAndFlash_T-Embed.sh` cycle. The
-# composite is installed lazily when the user enters the USB-Storage app.
-_boards_without_usb_otg = {"waveshare_c6_1.9", "waveshare_c6_1.47"}
-if _board in _boards_without_usb_otg:
-    APPS = [a for a in APPS if a != "usb_storage"]
 
 if _board in _boards_without_wolf3d:
     APPS = [a for a in APPS if a != "wolf3d"]

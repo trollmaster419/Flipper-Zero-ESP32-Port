@@ -4,6 +4,7 @@
 #include <furi.h>
 #include <storage/storage.h>
 #include <toolbox/saved_struct.h>
+#include <nvs.h>
 
 #define TAG "BtSettings"
 
@@ -40,5 +41,14 @@ void bt_settings_save(const BtSettings* bt_settings) {
 
     if(!success) {
         FURI_LOG_E(TAG, "Failed to save settings");
+    }
+
+    /* Mirror the enabled flag into raw NVS so app_main can read it at early boot (before storage
+     * is mounted) to decide whether to reserve the big-FAP exec pool. Takes effect next reboot. */
+    nvs_handle_t h;
+    if(nvs_open("fapcfg", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "ble_on", bt_settings->enabled ? 1 : 0);
+        nvs_commit(h);
+        nvs_close(h);
     }
 }

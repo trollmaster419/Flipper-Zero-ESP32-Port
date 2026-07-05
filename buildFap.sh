@@ -72,6 +72,7 @@ FAP_FILENAME="${APP_ID}.fap"
 #           BOARD_NAME              IDF_TARGET  TOOLCHAIN_PREFIX        BUILD_DIR
 TARGETS=(
     "lilygo_t_embed_cc1101      esp32s3     xtensa-esp32s3-elf      build_t_embed"
+    "m5stickcplus2              esp32       xtensa-esp32-elf        build_esp32"
 #    "waveshare_c6_1.9           esp32c6     riscv32-esp-elf         build_waveshare_c6"
 )
 
@@ -175,6 +176,9 @@ COMMON_CFLAGS=(
     -fno-builtin
     -fno-jump-tables
     -fno-tree-switch-conversion
+    -fno-unwind-tables
+    -fno-asynchronous-unwind-tables
+    -fomit-frame-pointer
     -std=gnu17
     -Wall
     -Wno-unused-parameter
@@ -194,6 +198,9 @@ COMMON_CXXFLAGS=(
     -fno-builtin
     -fno-jump-tables
     -fno-tree-switch-conversion
+    -fno-unwind-tables
+    -fno-asynchronous-unwind-tables
+    -fomit-frame-pointer
     -std=gnu++17
     -fno-exceptions
     -fno-rtti
@@ -273,6 +280,33 @@ build_for_target() {
             -I"$IDF/esp_rom/esp32s3"
         )
         TARGET_CFLAGS+=(-DBOARD_INCLUDE=\"board_lilygo_t_embed_cc1101.h\")
+    elif [ "$IDF_TARGET" = "esp32" ]; then
+        TARGET_CFLAGS+=(-mlongcalls)
+        TARGET_INCLUDES+=(
+            -I"$IDF/freertos/config/xtensa/include"
+            -I"$IDF/freertos/config/include"
+            -I"$IDF/freertos/config/include/freertos"
+            -I"$IDF/freertos/FreeRTOS-Kernel/include"
+            -I"$IDF/freertos/FreeRTOS-Kernel/portable/xtensa/include"
+            -I"$IDF/freertos/FreeRTOS-Kernel/portable/xtensa/include/freertos"
+            -I"$IDF/freertos/esp_additions/include"
+            -I"$IDF/xtensa/esp32/include"
+            -I"$IDF/xtensa/include"
+            -I"$IDF/xtensa/deprecated_include"
+            -I"$IDF/soc/esp32/include"
+            -I"$IDF/soc/esp32/register"
+            -I"$IDF/soc/esp32"
+            -I"$IDF/soc/include"
+            -I"$IDF/hal/esp32/include"
+            -I"$IDF/hal/include"
+            -I"$IDF/hal/platform_port/include"
+            -I"$IDF/esp_hw_support/port/esp32/."
+            -I"$IDF/esp_hw_support/port/esp32/include"
+            -I"$IDF/esp_rom/esp32/include"
+            -I"$IDF/esp_rom/esp32/include/esp32"
+            -I"$IDF/esp_rom/esp32"
+        )
+        TARGET_CFLAGS+=(-DBOARD_INCLUDE=\"board_m5stickcplus2.h\")
     elif [ "$IDF_TARGET" = "esp32c6" ]; then
         TARGET_CFLAGS+=(-march=rv32imac_zicsr_zifencei)
         TARGET_INCLUDES+=(
@@ -337,8 +371,8 @@ build_for_target() {
     elif [ -n "$FAP_SINGLE_SOURCE" ]; then
         C_SOURCES=("$FAP_SINGLE_SOURCE")
     else
-        C_SOURCES=($(find "$APP_DIR" -name '*.c' -type f))
-        CXX_SOURCES=($(find "$APP_DIR" -name '*.cpp' -type f))
+        C_SOURCES=($(find "$APP_DIR" -name '*.c' -type f ! -path '*/esp32-wifi-fw/*' ! -path '*/cloud-plugins/*' ! -path '*/wifi/*' ! -name '*wifi*'))
+        CXX_SOURCES=($(find "$APP_DIR" -name '*.cpp' -type f ! -path '*/esp32-wifi-fw/*' ! -path '*/cloud-plugins/*' ! -path '*/wifi/*' ! -name '*wifi*'))
     fi
     # Add generated icon .c files
     if [ -d "$ICONS_GEN_DIR" ]; then
@@ -402,7 +436,7 @@ build_for_target() {
 
     # Link
     echo "  Linking ${#OBJECTS[@]} objects (entry=$ENTRY_POINT)"
-    "$LD" -r -T "$SCRIPT_DIR/tools/fap.ld" --entry="$ENTRY_POINT" -o "$BUILD_DIR/app.elf" "${OBJECTS[@]}"
+    "$LD" -r --gc-sections -T "$SCRIPT_DIR/tools/fap.ld" --entry="$ENTRY_POINT" -o "$BUILD_DIR/app.elf" "${OBJECTS[@]}"
     local SECTIONS=$("$READELF" -S "$BUILD_DIR/app.elf" | grep -c '^\s*\[')
 
     # Manifest with icon

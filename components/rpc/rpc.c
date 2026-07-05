@@ -374,7 +374,7 @@ RpcSession* rpc_session_open(Rpc* rpc, RpcOwner owner) {
     };
     rpc_add_handler(session, PB_Main_stop_session_tag, &rpc_handler);
 
-    session->thread = furi_thread_alloc_ex("RpcSessionWorker", 4096, rpc_session_worker, session);
+    session->thread = furi_thread_alloc_ex("RpcSessionWorker", 8192, rpc_session_worker, session);
 
     furi_thread_set_state_context(session->thread, session);
     furi_thread_set_state_callback(session->thread, rpc_session_thread_state_callback);

@@ -6,6 +6,9 @@
 #include <applications.h>
 #include <archive/helpers/archive_favorites.h>
 #include <esp_rom_sys.h>
+#include <momentum_settings/momentum_settings.h>
+#include <furi_hal_subghz.h>
+#include <furi_hal_nfc.h>
 
 #include "loader.h"
 #include "loader_menu.h"
@@ -18,42 +21,16 @@ struct LoaderMenu {
     void* context;
 };
 
+/* Debug traces removed: these used esp_rom_printf, which writes directly to
+ * UART0 (bypassing both esp_log level and furi console mute) and so corrupts the
+ * qFlipper RPC protobuf stream whenever the bridge is active (garbled screen +
+ * "Serial connection was lost" on app launch). Kept as no-ops so call sites are
+ * unaffected. */
 static void loader_menu_trace(const char* step) {
-    esp_rom_printf(
-        "\r\n[LM] %s free=%u\r\n",
-        step,
-        (unsigned)furi_thread_get_stack_space(furi_thread_get_current_id()));
+    UNUSED(step);
 }
 
 static void loader_menu_trace_settings_registry(void) {
-    esp_rom_printf(
-        "\r\n[LM] settings_counts internal=%u external=%u\r\n",
-        (unsigned)FLIPPER_SETTINGS_APPS_COUNT,
-        (unsigned)FLIPPER_EXTSETTINGS_APPS_COUNT);
-
-    if(FLIPPER_SETTINGS_APPS_COUNT == 0) {
-        esp_rom_printf("\r\n[LM] settings_internal none\r\n");
-    } else {
-        for(size_t i = 0; i < FLIPPER_SETTINGS_APPS_COUNT; ++i) {
-            esp_rom_printf(
-                "\r\n[LM] settings_internal[%u] appid=%s name=%s\r\n",
-                (unsigned)i,
-                FLIPPER_SETTINGS_APPS[i].appid ? FLIPPER_SETTINGS_APPS[i].appid : "(null)",
-                FLIPPER_SETTINGS_APPS[i].name ? FLIPPER_SETTINGS_APPS[i].name : "(null)");
-        }
-    }
-
-    if(FLIPPER_EXTSETTINGS_APPS_COUNT == 0) {
-        esp_rom_printf("\r\n[LM] settings_external none\r\n");
-    } else {
-        for(size_t i = 0; i < FLIPPER_EXTSETTINGS_APPS_COUNT; ++i) {
-            esp_rom_printf(
-                "\r\n[LM] settings_external[%u] launch=%s name=%s\r\n",
-                (unsigned)i,
-                FLIPPER_EXTSETTINGS_APPS[i].path ? FLIPPER_EXTSETTINGS_APPS[i].path : "(null)",
-                FLIPPER_EXTSETTINGS_APPS[i].name ? FLIPPER_EXTSETTINGS_APPS[i].name : "(null)");
-        }
-    }
 }
 
 static int32_t loader_menu_thread(void* p);
@@ -202,6 +179,17 @@ static LoaderMenuApp* loader_menu_app_alloc(LoaderMenu* loader_menu) {
     app->view_dispatcher = view_dispatcher_alloc();
     app->primary_menu = menu_alloc();
     app->settings_menu = submenu_alloc();
+
+    momentum_settings_load();
+    menu_set_style(app->primary_menu, momentum_settings.menu_style);
+    /* Apply persisted external-radio pinout so a plugged-in CC1101 works without
+     * having to re-toggle the setting after every boot. The Bruce pins overlap
+     * the NFC bus, so disable NFC first (it resets those pins) when the radio is
+     * on, then point the SPI bus at them. */
+    if(momentum_settings.spi_cc1101_handle == SpiBruce) {
+        furi_hal_nfc_set_pins_config(NfcPinsDisabled);
+    }
+    furi_hal_subghz_set_spi_config(momentum_settings.spi_cc1101_handle);
 
     loader_menu_build_menu(app, loader_menu);
     loader_menu_build_submenu(app, loader_menu);

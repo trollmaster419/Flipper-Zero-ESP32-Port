@@ -40,7 +40,9 @@ const GpioPin gpio_ext_pb3  = {.port = NULL, .pin = BOARD_PIN_CC1101_SCK};
 const GpioPin gpio_ext_pa4  = {.port = NULL, .pin = BOARD_PIN_CC1101_CSN};
 const GpioPin gpio_ext_pa6  = {.port = NULL, .pin = BOARD_PIN_CC1101_MISO};
 const GpioPin gpio_ext_pa7  = {.port = NULL, .pin = BOARD_PIN_CC1101_MOSI};
-const GpioPin gpio_cc1101_g0 = {.port = NULL, .pin = BOARD_PIN_CC1101_GDO0};
+/* Non-const: GDO0 is repointed at runtime when an external CC1101 module is
+ * selected (e.g. Bruce pinout) via furi_hal_subghz_set_spi_config(). */
+GpioPin gpio_cc1101_g0 = {.port = NULL, .pin = BOARD_PIN_CC1101_GDO0};
 
 #ifdef BOARD_PIN_NRF24_CSN
 const GpioPin gpio_nrf24_cs = {.port = NULL, .pin = BOARD_PIN_NRF24_CSN};

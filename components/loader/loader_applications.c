@@ -17,11 +17,10 @@ struct LoaderApplications {
     void* context;
 };
 
+/* No-op: removed esp_rom_printf debug trace that corrupted the qFlipper RPC
+ * stream on UART0 (writes raw, bypassing log muting). */
 static void loader_applications_trace(const char* step) {
-    esp_rom_printf(
-        "\r\n[LA] %s free=%u\r\n",
-        step,
-        (unsigned)furi_thread_get_stack_space(furi_thread_get_current_id()));
+    UNUSED(step);
 }
 
 static int32_t loader_applications_thread(void* p);

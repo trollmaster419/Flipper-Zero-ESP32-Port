@@ -8,6 +8,7 @@
 #include <gui/elements.h>
 #include <assets_icons.h>
 #include <profiles/serial_profile.h>
+#include <momentum_settings/namespoof.h>
 
 #define TAG "BtSrv"
 
@@ -481,6 +482,11 @@ static void bt_load_keys(Bt* bt) {
 
 static void bt_start_application(Bt* bt) {
     if(!bt->current_profile) {
+        /* Apply name spoofing right before BLE serial profile reads the name.
+         * Storage may not be ready at bt_srv() entry, but by now the SD card
+         * has been checked (bt_init_keys_settings / bt_handle_reload_keys_settings). */
+        namespoof_init();
+
         bt->current_profile = furi_hal_bt_change_app(
             ble_profile_serial,
             NULL,
@@ -533,6 +539,7 @@ static void bt_init_keys_settings(Bt* bt) {
 
 int32_t bt_srv(void* p) {
     UNUSED(p);
+
     Bt* bt = bt_alloc();
 
     if(furi_hal_rtc_get_boot_mode() != FuriHalRtcBootModeNormal) {

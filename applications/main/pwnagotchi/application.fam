@@ -1,0 +1,10 @@
+App(
+    appid="pwnagotchi",
+    name="Pwnagotchi",
+    apptype=FlipperAppType.MENUEXTERNAL,
+    entry_point="pwnagotchi_app",
+    stack_size=20 * 1024,
+    icon="I_pwnagotchi_10px",
+    fap_icon="icon.png",
+    order=66,
+)

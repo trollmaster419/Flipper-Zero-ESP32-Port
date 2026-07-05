@@ -17,6 +17,7 @@ typedef struct {
     FuriThread* thread;
     FlipperApplication* fap;
     bool insomniac;
+    bool ble_released; /* BLE stack was torn down to free exec RAM for a big FAP; restore on close */
 } LoaderAppData;
 
 struct Loader {

@@ -1,0 +1,10 @@
+App(
+    appid="qflipper_app",
+    name="qFlipper",
+    apptype=FlipperAppType.MENUEXTERNAL,
+    entry_point="qflipper_app",
+    icon="A_Settings_14", # Reusing settings icon for now so build doesn't fail
+    stack_size=4 * 1024,
+    order=50,
+    resources="icons",
+)

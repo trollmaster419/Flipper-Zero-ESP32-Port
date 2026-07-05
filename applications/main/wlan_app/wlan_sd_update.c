@@ -11,15 +11,25 @@
 #include <esp_heap_caps.h>
 
 #define SD_UPDATE_TAG "WlanSdUpdate"
-// sdcard/-Ordner wird unter dieser Basis gespiegelt veröffentlicht.
-#define SD_UPDATE_BASE_URL "https://sor3nt.github.io/release/t-embed/latest"
-#define SD_UPDATE_VERSION_URL SD_UPDATE_BASE_URL "/version.txt"
-#define SD_UPDATE_FILES_URL SD_UPDATE_BASE_URL "/files.txt"
+
+// Raw GitHub content base for downloading files.
+#define SD_UPDATE_RAW_BASE "https://raw.githubusercontent.com/trollmaster419/m5resources/main"
+#define SD_UPDATE_VERSION_URL SD_UPDATE_RAW_BASE "/version.txt"
+
+// Plain-text manifest hosted alongside the resources, one file per line:
+//   V:<n> / T:<unix>          format version / timestamp (ignored)
+//   D:<dir>                   directory (ignored — created on demand)
+//   F:<md5>:<size>:<path>     a file
+// Listing files via the GitHub tree API instead hits the unauthenticated
+// 60-req/hr rate limit (HTTP 403) and needs JSON parsing; the raw manifest on
+// raw.githubusercontent.com has no rate limit, no User-Agent requirement, and
+// no JSON dependency.
+#define SD_UPDATE_MANIFEST_URL SD_UPDATE_RAW_BASE "/Manifest"
+
 #define SD_UPDATE_LOCAL_VERSION "/ext/version.txt"
 #define SD_UPDATE_DEST_ROOT "/ext"
-#define SD_UPDATE_MAX_MANIFEST (4u * 1024u * 1024u)
+#define SD_UPDATE_MAX_TREE_JSON (4u * 1024u * 1024u)
 #define SD_UPDATE_CHUNK 8192
-#define SD_UPDATE_LOCAL_MANIFEST "/ext/files.txt"
 
 static void* sd_malloc(size_t n) {
     void* p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
@@ -51,7 +61,7 @@ static void sd_update_fail(WlanSdUpdate* u, const char* msg) {
     FURI_LOG_E(SD_UPDATE_TAG, "%s", msg);
 }
 
-// Schneidet führende/abschließende Whitespaces (inkl. \r\n) in-place ab.
+// Trim leading/trailing whitespace (including \r\n) in-place.
 static void sd_update_trim(char* s) {
     size_t n = strlen(s);
     while(n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r' || s[n - 1] == ' ' ||
@@ -69,21 +79,19 @@ static void sd_update_trim(char* s) {
 static void sd_update_http_cfg(esp_http_client_config_t* cfg, const char* url) {
     memset(cfg, 0, sizeof(*cfg));
     cfg->url = url;
+    // api.github.com returns HTTP 403 for any request without a User-Agent.
+    cfg->user_agent = "m5stick-sd-update";
     cfg->timeout_ms = 20000;
     cfg->transport_type = HTTP_TRANSPORT_OVER_SSL;
-    // SSL-Verifikation deaktiviert (kein CA gesetzt; benötigt
-    // CONFIG_ESP_TLS_INSECURE / SKIP_SERVER_CERT_VERIFY).
     cfg->skip_cert_common_name_check = true;
     cfg->crt_bundle_attach = NULL;
     cfg->use_global_ca_store = false;
     cfg->buffer_size = SD_UPDATE_CHUNK;
     cfg->buffer_size_tx = 1024;
-    // Verbindung/TLS-Session über mehrere Dateien wiederverwenden, sonst
-    // zahlt jede Datei einen kompletten TLS-Handshake (sehr langsam).
     cfg->keep_alive_enable = true;
 }
 
-// Lädt eine kleine Text-Resource synchron in out (nul-terminiert).
+// Download a small text resource synchronously into out (nul-terminated).
 static bool sd_update_http_get_text(const char* url, char* out, size_t out_sz) {
     esp_http_client_config_t cfg;
     sd_update_http_cfg(&cfg, url);
@@ -113,7 +121,7 @@ static bool sd_update_http_get_text(const char* url, char* out, size_t out_sz) {
     return ok;
 }
 
-// Lädt das (Text-)Manifest in einen malloc-Puffer. Caller frees.
+// Download a (potentially large) text resource into a malloc buffer. Caller frees.
 static char* sd_update_http_get_alloc(const char* url, size_t* out_len) {
     esp_http_client_config_t cfg;
     sd_update_http_cfg(&cfg, url);
@@ -126,12 +134,16 @@ static char* sd_update_http_get_alloc(const char* url, size_t* out_len) {
 
     if(esp_http_client_open(client, 0) == ESP_OK) {
         esp_http_client_fetch_headers(client);
-        if(esp_http_client_get_status_code(client) == 200) {
+        int status = esp_http_client_get_status_code(client);
+        if(status != 200) {
+            FURI_LOG_E(SD_UPDATE_TAG, "tree fetch HTTP %d", status);
+        }
+        if(status == 200) {
             ok = true;
             while(true) {
                 if(len + 1 >= cap) {
                     size_t ncap = cap ? cap * 2 : 32768;
-                    if(ncap > SD_UPDATE_MAX_MANIFEST) {
+                    if(ncap > SD_UPDATE_MAX_TREE_JSON) {
                         ok = false;
                         break;
                     }
@@ -180,7 +192,7 @@ static bool sd_update_read_local_version(char* out, size_t out_sz) {
     return ok;
 }
 
-// true → lokale version.txt existiert und ist identisch mit der Remote-Version.
+// true -> local version.txt exists and matches remote version.
 static bool sd_update_is_up_to_date(void) {
     char remote[64];
     char local[64];
@@ -195,7 +207,7 @@ static bool sd_update_is_up_to_date(void) {
     return remote[0] != '\0' && strcmp(remote, local) == 0;
 }
 
-// Legt /ext/a/b rekursiv an (ohne den finalen Dateinamen).
+// Recursively create directories for a path (without the final filename).
 static void sd_update_mkdirs(Storage* storage, const char* path) {
     char tmp[256];
     strncpy(tmp, path, sizeof(tmp) - 1);
@@ -209,7 +221,7 @@ static void sd_update_mkdirs(Storage* storage, const char* path) {
     }
 }
 
-// Lädt eine Einzeldatei über den (wiederverwendeten) Client nach dest.
+// Download a single file via a (reusable) HTTP client to dest on SD.
 static bool sd_update_download_file(
     WlanSdUpdate* u,
     esp_http_client_handle_t client,
@@ -266,7 +278,7 @@ static bool sd_update_download_file(
     return ok;
 }
 
-// Path-Traversal-Schutz; baut /ext/<rel>.
+// Path-traversal protection; builds /ext/<rel>.
 static bool sd_update_safe_dest(const char* rel, char* out, size_t out_sz) {
     while(*rel == '/') rel++;
     if(!*rel) return false;
@@ -275,181 +287,129 @@ static bool sd_update_safe_dest(const char* rel, char* out, size_t out_sz) {
     return n > 0 && (size_t)n < out_sz;
 }
 
-static uint32_t sd_update_count_lines(const char* s) {
-    uint32_t n = 0;
-    for(; *s; ++s)
-        if(*s == '\n') n++;
-    return n ? n : 1;
+// Files to skip (repo housekeeping, not SD card resources). Manifest IS
+// downloaded to /ext so the device knows which database version is installed.
+static bool sd_update_should_skip(const char* path) {
+    return strcmp(path, "version.txt") == 0 ||
+           strcmp(path, "README.md") == 0 ||
+           strcmp(path, ".gitignore") == 0;
 }
 
-// Ein Manifest-Eintrag (Zeiger zeigen in den jeweiligen Puffer).
+// A single file entry parsed from the GitHub tree API response.
 typedef struct {
-    const char* path; // nul-terminiert
-    const char* sha;  // 64 Zeichen, nul-terminiert
-} SdManifestEntry;
+    const char* path;
+    uint64_t size;
+} SdTreeEntry;
 
-// Parst "<64 sha> <size> <pfad>" aus einer (mutierbaren) Zeile. Liefert false
-// bei Formatfehler. sha/pfad werden in-place nul-terminiert.
-static bool sd_update_parse_line(
-    char* line, const char** sha, uint64_t* size, const char** path) {
-    size_t ll = strlen(line);
-    while(ll && (line[ll - 1] == '\r' || line[ll - 1] == ' ')) line[--ll] = '\0';
-    if(ll < 67 || line[64] != ' ') return false;
-    line[64] = '\0';
-    *sha = line;
-    char* p = line + 65;
-    while(*p == ' ') p++;
-    uint64_t sz = 0;
-    while(*p >= '0' && *p <= '9') sz = sz * 10u + (uint64_t)(*p++ - '0');
-    if(*p != ' ') return false;
-    if(size) *size = sz;
-    p++;
-    while(*p == ' ') p++;
-    if(!*p) return false;
-    *path = p;
-    return true;
-}
-
-static int sd_manifest_cmp(const void* a, const void* b) {
-    return strcmp(((const SdManifestEntry*)a)->path, ((const SdManifestEntry*)b)->path);
-}
-
-// Lädt /ext/files.txt und baut ein sortiertes Array. *out_buf muss vom Caller
-// freigegeben werden. Liefert false wenn keine lokale Manifest-Datei da ist.
-static bool sd_update_load_local_manifest(
-    Storage* storage, char** out_buf, SdManifestEntry** out_entries, uint32_t* out_count) {
-    *out_buf = NULL;
-    *out_entries = NULL;
-    *out_count = 0;
-
-    FileInfo fi;
-    if(storage_common_stat(storage, SD_UPDATE_LOCAL_MANIFEST, &fi) != FSE_OK) return false;
-    if(fi.size == 0 || fi.size > SD_UPDATE_MAX_MANIFEST) return false;
-
-    char* buf = sd_malloc((size_t)fi.size + 1);
-    if(!buf) return false;
-
-    File* f = storage_file_alloc(storage);
-    if(!storage_file_open(f, SD_UPDATE_LOCAL_MANIFEST, FSAM_READ, FSOM_OPEN_EXISTING)) {
-        storage_file_free(f);
-        free(buf);
-        return false;
+// Parse the plain-text manifest into an array of file entries (only 'F:' lines).
+// Returns the array (caller frees) and sets *out_count. Returns NULL on error.
+// Paths point into the manifest buffer, which is NUL-terminated in place and
+// must stay alive while the entries are used.
+static SdTreeEntry* sd_update_parse_manifest(char* manifest, uint32_t* out_count) {
+    // First pass: count file ('F:') lines.
+    uint32_t cap = 0;
+    for(char* p = manifest; *p;) {
+        if(p[0] == 'F' && p[1] == ':') cap++;
+        char* nl = strchr(p, '\n');
+        if(!nl) break;
+        p = nl + 1;
     }
-    size_t rd = storage_file_read(f, buf, (size_t)fi.size);
-    storage_file_close(f);
-    storage_file_free(f);
-    buf[rd] = '\0';
+    if(cap == 0) return NULL;
 
-    uint32_t cap = sd_update_count_lines(buf);
-    SdManifestEntry* arr = sd_malloc(sizeof(SdManifestEntry) * cap);
-    if(!arr) {
-        free(buf);
-        return false;
-    }
+    SdTreeEntry* entries = sd_malloc(sizeof(SdTreeEntry) * cap);
+    if(!entries) return NULL;
 
     uint32_t n = 0;
-    char* save = NULL;
-    for(char* line = strtok_r(buf, "\n", &save); line && n < cap;
-        line = strtok_r(NULL, "\n", &save)) {
-        const char *sha, *path;
-        if(sd_update_parse_line(line, &sha, NULL, &path)) {
-            arr[n].sha = sha;
-            arr[n].path = path;
-            n++;
+    char* p = manifest;
+    while(*p && n < cap) {
+        char* nl = strchr(p, '\n');
+        if(nl) *nl = '\0';
+
+        // F:<md5>:<size>:<path>
+        if(p[0] == 'F' && p[1] == ':') {
+            char* c1 = strchr(p + 2, ':'); // end of md5
+            char* c2 = c1 ? strchr(c1 + 1, ':') : NULL; // end of size
+            if(c1 && c2) {
+                *c2 = '\0';
+                char* size_str = c1 + 1;
+                char* path = c2 + 1;
+                size_t plen = strlen(path);
+                if(plen && path[plen - 1] == '\r') path[--plen] = '\0';
+                if(plen && !sd_update_should_skip(path)) {
+                    entries[n].path = path;
+                    entries[n].size = strtoull(size_str, NULL, 10);
+                    n++;
+                }
+            }
         }
-    }
-    qsort(arr, n, sizeof(SdManifestEntry), sd_manifest_cmp);
 
-    *out_buf = buf;
-    *out_entries = arr;
+        if(!nl) break;
+        p = nl + 1;
+    }
+
     *out_count = n;
-    return true;
+    return entries;
 }
 
-static const char* sd_manifest_lookup(
-    SdManifestEntry* arr, uint32_t n, const char* path) {
-    SdManifestEntry key = {.path = path, .sha = NULL};
-    SdManifestEntry* hit = bsearch(&key, arr, n, sizeof(SdManifestEntry), sd_manifest_cmp);
-    return hit ? hit->sha : NULL;
-}
-
-static void sd_update_save_manifest(Storage* storage, const char* data, size_t len) {
-    File* f = storage_file_alloc(storage);
-    if(storage_file_open(f, SD_UPDATE_LOCAL_MANIFEST, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
-        storage_file_write(f, data, len);
-        storage_file_close(f);
+// Main sync: fetch the tree, compare with local files, download what's needed.
+static bool sd_update_sync(WlanSdUpdate* u) {
+    // Fetch the plain-text manifest (lists every file + size).
+    sd_update_set_file(u, "file list");
+    size_t manifest_len = 0;
+    char* manifest = sd_update_http_get_alloc(SD_UPDATE_MANIFEST_URL, &manifest_len);
+    if(!manifest) {
+        if(!u->cancel) sd_update_fail(u, "Manifest fetch failed");
+        return false;
     }
-    storage_file_free(f);
-}
 
-// Delta-Sync: vergleicht das (frische) Remote-Manifest mit dem zuletzt
-// gespeicherten lokalen /ext/files.txt; lädt nur neue/geänderte Dateien.
-static bool sd_update_sync(WlanSdUpdate* u, const char* manifest, size_t mlen) {
-    uint32_t total = sd_update_count_lines(manifest);
-    uint32_t done = 0;
-    u->total_files = total;
+    // Paths in entries[] point into manifest; it must outlive the download loop.
+    uint32_t count = 0;
+    SdTreeEntry* entries = sd_update_parse_manifest(manifest, &count);
+    if(!entries || count == 0) {
+        free(manifest);
+        sd_update_fail(u, "No files in manifest");
+        return false;
+    }
+
+    u->total_files = count;
     u->done_files = 0;
 
     Storage* storage = furi_record_open(RECORD_STORAGE);
     storage_common_mkdir(storage, SD_UPDATE_DEST_ROOT);
 
-    char* lbuf = NULL;
-    SdManifestEntry* lentries = NULL;
-    uint32_t lcount = 0;
-    bool have_local =
-        sd_update_load_local_manifest(storage, &lbuf, &lentries, &lcount);
-
+    // Create a single HTTP client for all downloads (TLS session reuse).
     esp_http_client_config_t cfg;
-    sd_update_http_cfg(&cfg, SD_UPDATE_BASE_URL "/files.txt");
+    sd_update_http_cfg(&cfg, SD_UPDATE_RAW_BASE "/version.txt");
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
-
     bool ok = (client != NULL);
-    const char* cur = manifest;
-    char line[300];
 
-    while(ok && *cur) {
+    for(uint32_t i = 0; ok && i < count; i++) {
         if(u->cancel) {
             ok = false;
             break;
         }
-        const char* nl = strchr(cur, '\n');
-        size_t ln = nl ? (size_t)(nl - cur) : strlen(cur);
-        if(ln >= sizeof(line)) ln = sizeof(line) - 1;
-        memcpy(line, cur, ln);
-        line[ln] = '\0';
-        cur = nl ? nl + 1 : cur + strlen(cur);
 
-        done++;
-        u->done_files = done;
-        u->percent = (uint8_t)((uint64_t)done * 100u / total);
+        const char* rel = entries[i].path;
+        uint64_t want_size = entries[i].size;
 
-        const char *want_sha, *rel;
-        uint64_t want_size = 0;
-        if(!sd_update_parse_line(line, &want_sha, &want_size, &rel)) continue;
+        u->done_files = i + 1;
+        u->percent = (uint8_t)((uint64_t)(i + 1) * 100u / count);
 
         char dest[256];
         if(!sd_update_safe_dest(rel, dest, sizeof(dest))) continue;
 
-        bool need = true;
+        // Skip files that already exist with matching size.
         FileInfo fi;
-        bool exists = storage_common_stat(storage, dest, &fi) == FSE_OK;
-        const char* lsha = have_local ? sd_manifest_lookup(lentries, lcount, rel) : NULL;
-        if(lsha && exists && strcmp(lsha, want_sha) == 0) {
-            need = false; // laut lokalem Manifest unverändert
-        } else if(!have_local && exists && fi.size == want_size) {
-            // Erstlauf ohne lokales Manifest: vorhandene Datei mit passender
-            // Größe als aktuell annehmen (kein Hashing → schnell). Nach dem
-            // Lauf wird das Manifest persistiert → danach exakter SHA-Diff.
-            need = false;
+        if(storage_common_stat(storage, dest, &fi) == FSE_OK &&
+           want_size > 0 && fi.size == want_size) {
+            continue;
         }
-
-        if(!need) continue;
 
         sd_update_set_file(u, rel);
         u->speed_kbps = 0;
 
         char url[400];
-        snprintf(url, sizeof(url), "%s/%s", SD_UPDATE_BASE_URL, rel);
+        snprintf(url, sizeof(url), "%s/%s", SD_UPDATE_RAW_BASE, rel);
         FURI_LOG_I(SD_UPDATE_TAG, "fetch %s", rel);
         if(!sd_update_download_file(u, client, storage, url, dest)) {
             if(u->cancel) {
@@ -465,13 +425,20 @@ static bool sd_update_sync(WlanSdUpdate* u, const char* manifest, size_t mlen) {
     }
 
     if(client) esp_http_client_cleanup(client);
-    if(lentries) free(lentries);
-    if(lbuf) free(lbuf);
+    free(entries);
+    free(manifest);
 
-    // Nur bei vollständigem Erfolg das Manifest persistieren (sonst beim
-    // nächsten Lauf erneut diffen).
+    // Save remote version.txt locally on success.
     if(ok && !u->cancel) {
-        sd_update_save_manifest(storage, manifest, mlen);
+        char ver[64];
+        if(sd_update_http_get_text(SD_UPDATE_VERSION_URL, ver, sizeof(ver))) {
+            File* vf = storage_file_alloc(storage);
+            if(storage_file_open(vf, SD_UPDATE_LOCAL_VERSION, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
+                storage_file_write(vf, ver, strlen(ver));
+                storage_file_close(vf);
+            }
+            storage_file_free(vf);
+        }
     }
 
     furi_record_close(RECORD_STORAGE);
@@ -479,7 +446,7 @@ static bool sd_update_sync(WlanSdUpdate* u, const char* manifest, size_t mlen) {
 }
 
 // ---------------------------------------------------------------------------
-// Worker-Task
+// Worker Task
 // ---------------------------------------------------------------------------
 
 static void sd_update_finish(WlanSdUpdate* u) {
@@ -508,20 +475,7 @@ static void sd_update_task(void* arg) {
     u->phase = WlanSdUpdateDownloading;
     u->percent = 0;
 
-    size_t mlen = 0;
-    char* manifest = sd_update_http_get_alloc(SD_UPDATE_FILES_URL, &mlen);
-    if(!manifest) {
-        if(u->cancel) {
-            u->phase = WlanSdUpdateIdle;
-        } else {
-            sd_update_fail(u, "files.txt fetch failed");
-        }
-        sd_update_finish(u);
-        return;
-    }
-
-    bool ok = sd_update_sync(u, manifest, mlen);
-    free(manifest);
+    bool ok = sd_update_sync(u);
 
     if(ok) {
         u->percent = 100;
@@ -569,7 +523,14 @@ void wlan_sd_update_start(WlanSdUpdate* u) {
     sd_update_set_file(u, "version.txt");
     u->phase = WlanSdUpdateChecking;
     u->running = true;
-    if(xTaskCreate(sd_update_task, "WlanSdUpd", 8192, u, 4, &u->task) != pdPASS) {
+    static StaticTask_t sd_upd_tcb;
+    size_t sd_stack_size = 8192;
+    StackType_t* sd_stack = heap_caps_malloc(sd_stack_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if(!sd_stack) sd_stack = heap_caps_malloc(sd_stack_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if(sd_stack) {
+        u->task = xTaskCreateStatic(sd_update_task, "WlanSdUpd", sd_stack_size, u, 4, sd_stack, &sd_upd_tcb);
+    }
+    if(!u->task) {
         u->running = false;
         u->task = NULL;
         sd_update_fail(u, "Task spawn failed");

@@ -30,6 +30,8 @@ const uint8_t* const _A_Levelup2_128x64[] = {_A_Levelup2_128x64_0,_A_Levelup2_12
 
 const uint8_t _I_125_10px_0[] = {0x00,0xe0,0x00,0x00,0x01,0x0e,0x02,0x31,0x02,0x45,0x02,0x91,0x00,0xaa,0x00,0x92,0x00,0x44,0x00,0x38,0x00,};
 const uint8_t* const _I_125_10px[] = {_I_125_10px_0};
+const uint8_t _I_pwnagotchi_10px_0[] = {0x00,0x00,0x00,0x00,0x00,0x84,0x00,0x00,0x00,0x00,0x00,0x02,0x01,0x32,0x01,0xfe,0x01,0x00,0x00,0x00,0x00,};
+const uint8_t* const _I_pwnagotchi_10px[] = {_I_pwnagotchi_10px_0};
 
 const uint8_t _I_Apps_10px_0[] = {0x00,0x00,0x00,0x20,0x00,0x88,0x00,0xaa,0x02,0xa8,0x00,0xaa,0x02,0xaa,0x02,0x22,0x02,0xa8,0x00,0x20,0x00,};
 const uint8_t* const _I_Apps_10px[] = {_I_Apps_10px_0};
@@ -972,6 +974,7 @@ const Icon I_Message_8x7 = {.width=8,.height=7,.frame_count=1,.frame_rate=0,.fra
 const Icon A_Levelup1_128x64 = {.width=128,.height=64,.frame_count=11,.frame_rate=2,.frames=_A_Levelup1_128x64};
 const Icon A_Levelup2_128x64 = {.width=128,.height=64,.frame_count=11,.frame_rate=2,.frames=_A_Levelup2_128x64};
 const Icon I_125_10px = {.width=10,.height=10,.frame_count=1,.frame_rate=0,.frames=_I_125_10px};
+const Icon I_pwnagotchi_10px = {.width=10,.height=10,.frame_count=1,.frame_rate=0,.frames=_I_pwnagotchi_10px};
 const Icon I_Apps_10px = {.width=10,.height=10,.frame_count=1,.frame_rate=0,.frames=_I_Apps_10px};
 const Icon I_Nfc_10px = {.width=10,.height=10,.frame_count=1,.frame_rate=0,.frames=_I_Nfc_10px};
 const Icon I_back_10px = {.width=10,.height=10,.frame_count=1,.frame_rate=0,.frames=_I_back_10px};

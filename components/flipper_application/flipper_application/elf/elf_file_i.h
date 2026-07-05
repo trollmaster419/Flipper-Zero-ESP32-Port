@@ -23,6 +23,7 @@ struct ELFSection {
     Elf32_Off rel_offset;
 
     uint16_t sec_idx;
+    bool is_code;
 };
 
 DICT_DEF2(ELFSectionDict, const char*, M_CSTR_OPLIST, ELFSection, M_POD_OPLIST)

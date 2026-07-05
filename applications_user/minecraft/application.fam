@@ -1,0 +1,13 @@
+App(
+    appid="minecraft",
+    name="Minecraft",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="minecraft_app",
+    stack_size=8 * 1024,
+    fap_category="Games",
+    fap_icon="icon.png",
+    fap_description="Minecraft Client for ESP32",
+    fap_author="Antigravity",
+    fap_weburl="https://github.com/Sor3nt/Flipper-Zero-ESP32-Port",
+    fap_version="0.1",
+)

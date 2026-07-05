@@ -3,12 +3,7 @@
 
 const SubGhzProtocol* protopirate_protocol_registry_items[] = {
     &subghz_protocol_scher_khan, // Heap: free 16320
-    &kia_protocol_v0, // Heap: free 16976
-    &kia_protocol_v1, // Heap: free 17192
-    &kia_protocol_v2, // Heap: free 16944
-    &kia_protocol_v3_v4, // Heap: free 18432
-    &kia_protocol_v5, // Heap: free 16528
-    &kia_protocol_v6, // Heap: free 18296
+    // kia_protocol_v0..v6 stripped on classic ESP32 to fit the exec pool
     &ford_protocol_v0, // Heap: free 19456
     &fiat_protocol_v0, // Heap: free 16864
     &fiat_v1_protocol,
@@ -17,9 +12,7 @@ const SubGhzProtocol* protopirate_protocol_registry_items[] = {
     &porsche_touareg_protocol,
     &subaru_protocol, // Heap: free 17280
     &suzuki_protocol, // Heap: free 16064
-    &vag_protocol, // Heap: free 29352
-    &subghz_protocol_star_line, // Heap: free 18632
-    &psa_protocol, // Heap: free 25408
+    // vag / star_line / psa stripped on classic ESP32 to fit the exec pool
 };
 // TODO: See above
 // Current HEAP situation:

@@ -68,6 +68,13 @@ void menu_reset(Menu* menu);
  */
 void menu_set_selected_item(Menu* menu, uint32_t index);
 
+/** Set menu style
+ *
+ * @param      menu   Menu instance
+ * @param      style  MenuStyle value
+ */
+void menu_set_style(Menu* menu, uint8_t style);
+
 #ifdef __cplusplus
 }
 #endif

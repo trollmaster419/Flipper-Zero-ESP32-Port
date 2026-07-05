@@ -9,6 +9,16 @@ static const char* TAG = "FuriHal";
 void furi_hal_init_early(void) {
     furi_hal_cortex_init_early();
 
+#ifdef BOARD_PIN_HOLD
+    /* Power-hold latch (e.g. M5StickC Plus2 GPIO4): must be driven HIGH as early
+     * as possible and kept there, otherwise the device powers off the instant USB
+     * is unplugged. This is a self-latch — once held, it keeps the regulator on. */
+    static const GpioPin pwr_hold = {.port = NULL, .pin = BOARD_PIN_HOLD};
+    furi_hal_gpio_init_simple(&pwr_hold, GpioModeOutputPushPull);
+    furi_hal_gpio_write(&pwr_hold, true);
+    ESP_LOGI(TAG, "PWR_HOLD GPIO%d set HIGH", BOARD_PIN_HOLD);
+#endif
+
 #ifdef BOARD_PIN_PWR_EN
     /* Power-enable must be set early — powers CC1101, BQ27220 fuel gauge, WS2812 */
     static const GpioPin pwr_en = {.port = NULL, .pin = BOARD_PIN_PWR_EN};

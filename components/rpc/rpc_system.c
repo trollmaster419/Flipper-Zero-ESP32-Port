@@ -23,7 +23,7 @@ static void rpc_system_system_ping_process(const PB_Main* request, void* context
     furi_assert(request);
     furi_assert(request->which_content == PB_Main_system_ping_request_tag);
 
-    FURI_LOG_D(TAG, "Ping");
+    // FURI_LOG_D(TAG, "Ping"); // Disabled to prevent serial TX stream corruption
 
     RpcSession* session = (RpcSession*)context;
     furi_assert(session);
@@ -53,7 +53,7 @@ static void rpc_system_system_ping_process(const PB_Main* request, void* context
 static void rpc_system_system_reboot_process(const PB_Main* request, void* context) {
     furi_assert(request);
     RpcSession* session = (RpcSession*)context;
-    FURI_LOG_W(TAG, "Reboot not implemented on ESP32");
+    // FURI_LOG_W(TAG, "Reboot not implemented on ESP32"); // Disabled to prevent serial TX stream corruption
     rpc_send_and_release_empty(
         session, request->command_id, PB_CommandStatus_ERROR_NOT_IMPLEMENTED);
 }
@@ -82,7 +82,7 @@ static void rpc_system_system_device_info_process(const PB_Main* request, void* 
     furi_assert(request);
     furi_assert(request->which_content == PB_Main_system_device_info_request_tag);
 
-    FURI_LOG_D(TAG, "DeviceInfo");
+    // FURI_LOG_D(TAG, "DeviceInfo"); // Disabled to prevent serial TX stream corruption
 
     RpcSession* session = (RpcSession*)context;
     furi_assert(session);
@@ -105,7 +105,7 @@ static void rpc_system_system_get_datetime_process(const PB_Main* request, void*
     furi_assert(request);
     furi_assert(request->which_content == PB_Main_system_get_datetime_request_tag);
 
-    FURI_LOG_D(TAG, "GetDatetime");
+    // FURI_LOG_D(TAG, "GetDatetime"); // Disabled to prevent serial TX stream corruption
 
     RpcSession* session = (RpcSession*)context;
     furi_assert(session);
@@ -177,7 +177,7 @@ static void rpc_system_system_get_power_info_process(const PB_Main* request, voi
     furi_assert(request);
     furi_assert(request->which_content == PB_Main_system_power_info_request_tag);
 
-    FURI_LOG_D(TAG, "GetPowerInfo");
+    // FURI_LOG_D(TAG, "GetPowerInfo"); // Disabled to prevent serial TX stream corruption
 
     RpcSession* session = (RpcSession*)context;
     furi_assert(session);
@@ -200,7 +200,7 @@ static void rpc_system_system_protobuf_version_process(const PB_Main* request, v
     furi_assert(request);
     furi_assert(request->which_content == PB_Main_system_protobuf_version_request_tag);
 
-    FURI_LOG_D(TAG, "ProtobufVersion");
+    // FURI_LOG_D(TAG, "ProtobufVersion"); // Disabled to prevent serial TX stream corruption
 
     RpcSession* session = (RpcSession*)context;
     furi_assert(session);
@@ -214,6 +214,56 @@ static void rpc_system_system_protobuf_version_process(const PB_Main* request, v
     response->content.system_protobuf_version_response.minor = PROTOBUF_MINOR_VERSION;
 
     rpc_send_and_release(session, response);
+    free(response);
+}
+
+static void rpc_system_property_get_callback(
+    const char* key,
+    const char* value,
+    bool last,
+    void* context) {
+    furi_assert(key);
+    furi_assert(value);
+    RpcSystemContext* ctx = context;
+    furi_assert(ctx);
+
+    ctx->response->has_next = !last;
+    ctx->response->content.property_get_response.key = strdup(key);
+    ctx->response->content.property_get_response.value = strdup(value);
+
+    rpc_send_and_release(ctx->session, ctx->response);
+}
+
+static void rpc_system_property_get_process(const PB_Main* request, void* context) {
+    furi_assert(request);
+    furi_assert(request->which_content == PB_Main_property_get_request_tag);
+
+    RpcSession* session = (RpcSession*)context;
+    furi_assert(session);
+
+    /* The request key selects a property category (qFlipper sends "devinfo"),
+     * not a literal key prefix — the emitted keys are dotted (hardware.name,
+     * firmware.version, ...). Reuse the same providers as system_device_info /
+     * system_power_info but with the '.' separator qFlipper expects. */
+    const char* category = request->content.property_get_request.key;
+
+    PB_Main* response = malloc(sizeof(PB_Main));
+    response->command_id = request->command_id;
+    response->which_content = PB_Main_property_get_response_tag;
+    response->command_status = PB_CommandStatus_OK;
+
+    RpcSystemContext property_context = {
+        .session = session,
+        .response = response,
+    };
+
+    if(category && (strcmp(category, "pwrinfo") == 0)) {
+        furi_hal_power_info_get(rpc_system_property_get_callback, '.', &property_context);
+    } else {
+        /* Default (and "devinfo"): full device information. */
+        furi_hal_info_get(rpc_system_property_get_callback, '.', &property_context);
+    }
+
     free(response);
 }
 
@@ -246,6 +296,9 @@ void* rpc_system_system_alloc(RpcSession* session) {
 
     rpc_handler.message_handler = rpc_system_system_protobuf_version_process;
     rpc_add_handler(session, PB_Main_system_protobuf_version_request_tag, &rpc_handler);
+
+    rpc_handler.message_handler = rpc_system_property_get_process;
+    rpc_add_handler(session, PB_Main_property_get_request_tag, &rpc_handler);
 
     return NULL;
 }

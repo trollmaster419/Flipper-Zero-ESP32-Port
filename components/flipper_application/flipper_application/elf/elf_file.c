@@ -9,6 +9,7 @@
 
 #ifdef ESP_PLATFORM
 #include <esp_heap_caps.h>
+#include <esp_memory_utils.h>
 #endif
 
 #include <stdlib.h>
@@ -48,10 +49,154 @@ static inline void* elf_psram_malloc(size_t size) {
  *   Instruction bus: 0x42000000 - 0x43FFFFFF
  * Offset: 0x06000000 */
 #ifdef ESP_PLATFORM
+#include <sdkconfig.h>
 #define PSRAM_DATA_TO_INST(addr) \
-    (((addr) >= 0x3C000000 && (addr) < 0x3E000000) ? ((addr) + 0x06000000) : (addr))
+    ( \
+      /* ESP32-S3 mapping: 0x3C -> 0x42 (offset 0x06000000) */ \
+      ((addr) >= 0x3C000000 && (addr) < 0x3E000000) ? ((addr) + 0x06000000) : \
+      /* ESP32 PSRAM: 0x3F80 -> 0x4080 (offset 0x01000000) */ \
+      ((addr) >= 0x3F800000 && (addr) < 0x3FC00000) ? ((addr) + 0x01000000) : \
+      /* ESP32 Internal: use IDF helper if available, otherwise fallback */ \
+      esp_ptr_in_diram_dram((void*)(addr)) ? (uint32_t)esp_ptr_diram_dram_to_iram((void*)(addr)) : \
+      (addr) \
+    )
+#define PSRAM_INST_TO_DATA(addr) \
+    ( \
+      /* ESP32-S3 mapping: 0x42 -> 0x3C (offset -0x06000000) */ \
+      ((addr) >= 0x42000000 && (addr) < 0x44000000) ? ((addr) - 0x06000000) : \
+      /* ESP32 PSRAM: 0x4080 -> 0x3F80 (offset -0x01000000) */ \
+      ((addr) >= 0x40800000 && (addr) < 0x40C00000) ? ((addr) - 0x01000000) : \
+      /* ESP32 Internal: use IDF helper for IRAM -> DRAM */ \
+      esp_ptr_in_diram_iram((void*)(addr)) ? (uint32_t)esp_ptr_diram_iram_to_dram((void*)(addr)) : \
+      (addr) \
+    )
 #else
 #define PSRAM_DATA_TO_INST(addr) (addr)
+#define PSRAM_INST_TO_DATA(addr) (addr)
+#endif
+
+/**************************************************************************************************/
+/************************************ FAP executable code pool ***********************************/
+/**************************************************************************************************/
+/* Classic ESP32 can only execute dynamically-loaded code from internal IRAM, and at runtime the
+ * exec-capable heap is fragmented down to a ~31 KiB hole (see fap-loader-iram-exec). To run larger
+ * FAPs we reserve ONE big contiguous exec block at early boot (before BLE/services fragment
+ * D/IRAM) and hand out FAP .text from it with a trivial refcount bump allocator. No in-band
+ * metadata is written into the block (IRAM is not byte-writable and D/IRAM is word-inverted), so
+ * the block stays pure code storage; the loader still writes through the DRAM mirror as usual.
+ * FAPs load and free their sections as a unit, so when the alloc count returns to zero the bump
+ * offset resets and the whole pool is reusable for the next FAP. */
+#if defined(ESP_PLATFORM) && defined(CONFIG_IDF_TARGET_ESP32)
+static uint8_t* fap_exec_pool_base = NULL; /* IRAM (instruction-bus) view */
+static size_t fap_exec_pool_size = 0;
+static size_t fap_exec_pool_offset = 0;
+static int fap_exec_pool_count = 0;
+
+/* Leave this much exec-capable RAM for the rest of the firmware; never grab it all. */
+#define FAP_EXEC_POOL_HEADROOM (40 * 1024)
+#define FAP_EXEC_POOL_MIN (8 * 1024)
+
+static void* fap_exec_pool_alloc_stack(size_t size);
+static void fap_exec_pool_free_stack(void* p);
+
+void fap_exec_pool_init(size_t requested) {
+    size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_EXEC);
+    size_t free_total = heap_caps_get_free_size(MALLOC_CAP_EXEC);
+    FURI_LOG_I(
+        TAG,
+        "fap exec pool: at boot free=%u largest=%u, requesting %u",
+        (unsigned)free_total,
+        (unsigned)largest,
+        (unsigned)requested);
+
+    size_t max_take = (largest > FAP_EXEC_POOL_HEADROOM) ? (largest - FAP_EXEC_POOL_HEADROOM) : 0;
+    size_t size = (requested < max_take) ? requested : max_take;
+    size &= ~0xFFFu; /* 4 KiB granularity */
+    if(size < FAP_EXEC_POOL_MIN) {
+        FURI_LOG_E(TAG, "fap exec pool: not enough contiguous exec RAM (max_take=%u)", (unsigned)max_take);
+        return;
+    }
+
+    void* p = heap_caps_malloc(size, MALLOC_CAP_EXEC | MALLOC_CAP_32BIT);
+    if(!p) {
+        FURI_LOG_E(TAG, "fap exec pool: reserve of %u FAILED", (unsigned)size);
+        return;
+    }
+    fap_exec_pool_base = p;
+    fap_exec_pool_size = size;
+    fap_exec_pool_offset = 0;
+    fap_exec_pool_count = 0;
+    FURI_LOG_I(TAG, "fap exec pool: reserved %u bytes @ %p", (unsigned)size, p);
+
+    /* Let FAP thread stacks come from the pool's contiguous internal leftover instead of
+       falling back to PSRAM (which DoubleExceptions on cache-disabled flash ops). */
+    furi_thread_set_ext_stack_allocator(fap_exec_pool_alloc_stack, fap_exec_pool_free_stack);
+}
+
+void fap_exec_pool_deinit(void) {
+    if(!fap_exec_pool_base) return;
+    FURI_LOG_I(TAG, "fap exec pool: releasing %u bytes @ %p", (unsigned)fap_exec_pool_size, fap_exec_pool_base);
+    heap_caps_free(fap_exec_pool_base);
+    fap_exec_pool_base = NULL;
+    fap_exec_pool_size = 0;
+    fap_exec_pool_offset = 0;
+    fap_exec_pool_count = 0;
+    /* Remove the ext-stack allocator so new FAP threads fall back to the default allocator. */
+    furi_thread_set_ext_stack_allocator(NULL, NULL);
+}
+
+static void* fap_exec_pool_alloc(size_t size, size_t align) {
+    if(!fap_exec_pool_base) return NULL;
+    if(align < 4) align = 4;
+    size_t off = (fap_exec_pool_offset + (align - 1)) & ~(align - 1);
+    if(off + size > fap_exec_pool_size) return NULL; /* doesn't fit; caller falls back to heap */
+    void* p = fap_exec_pool_base + off;
+    fap_exec_pool_offset = off + size;
+    fap_exec_pool_count++;
+    return p;
+}
+
+static bool fap_exec_pool_contains(const void* p) {
+    return fap_exec_pool_base && (const uint8_t*)p >= fap_exec_pool_base &&
+           (const uint8_t*)p < (fap_exec_pool_base + fap_exec_pool_size);
+}
+
+static void fap_exec_pool_free(const void* p) {
+    if(!fap_exec_pool_contains(p)) return;
+    if(--fap_exec_pool_count <= 0) {
+        fap_exec_pool_count = 0;
+        fap_exec_pool_offset = 0; /* pool drained -> reusable */
+    }
+}
+
+/* Stack allocator handed to furi_thread: bump-allocates from the pool but returns the DATA-bus
+   (DRAM mirror) address, since stacks are accessed via the data bus. On classic ESP32 the D/IRAM
+   region is word-inverted (instruction and data buses run opposite directions), so the two ends
+   of the reserved instruction-bus range swap on the data bus -- return the lower data address so
+   the buffer is a normal ascending [lo, lo+size). The allocation shares the pool's refcount, so
+   when the FAP's code AND stack are both freed the bump offset resets. */
+static void* fap_exec_pool_alloc_stack(size_t size) {
+    void* iram = fap_exec_pool_alloc(size, 16);
+    if(!iram) return NULL;
+    uintptr_t d0 = (uintptr_t)PSRAM_INST_TO_DATA((uintptr_t)iram);
+    uintptr_t d1 = (uintptr_t)PSRAM_INST_TO_DATA((uintptr_t)iram + size - 4);
+    return (void*)((d0 < d1) ? d0 : d1);
+}
+
+static void fap_exec_pool_free_stack(void* p) {
+    (void)p; /* data-bus address; not in the instruction-bus pool range, so just drop the refcount */
+    if(!fap_exec_pool_base) return;
+    if(--fap_exec_pool_count <= 0) {
+        fap_exec_pool_count = 0;
+        fap_exec_pool_offset = 0;
+    }
+}
+#else
+void fap_exec_pool_init(size_t requested) {
+    (void)requested;
+}
+void fap_exec_pool_deinit(void) {
+}
 #endif
 
 /**************************************************************************************************/
@@ -75,6 +220,72 @@ static void address_cache_put(AddressCache_t cache, int symEntry, Elf32_Addr sym
 /**************************************************************************************************/
 /********************************************** ELF ***********************************************/
 /**************************************************************************************************/
+
+#ifdef CONFIG_IDF_TARGET_ESP32
+/* ESP32 IRAM (0x40...) ONLY supports word-aligned 32-bit access.
+ * If a DRAM mirror is available via PSRAM_INST_TO_DATA, we use it for easy access.
+ * Otherwise, we must perform 4-byte aligned Word Read-Modify-Write. */
+/* IMPORTANT: the D/IRAM mirror is WORD-inverted (SOC_DIRAM_INVERTED): the conversion helper
+ * esp_ptr_diram_iram_to_dram subtracts 4, so it is only correct for WORD-ALIGNED addresses. We
+ * therefore always convert the word-aligned base and index bytes WITHIN the word (bytes keep their
+ * order; only whole words are swapped between the I-bus and D-bus views). Converting a raw byte
+ * address would land on the wrong byte and corrupt code -- which is exactly what crashed FAPs
+ * loaded into the D/IRAM pool. For pure IRAM (identity mirror) and PSRAM (linear offset) this same
+ * code path is also correct. */
+static inline void* elf_iram_word_mirror(uintptr_t word_addr) {
+    return (void*)(uintptr_t)PSRAM_INST_TO_DATA(word_addr);
+}
+
+static inline uint8_t elf_iram_read8(void* addr) {
+    uintptr_t a = (uintptr_t)addr;
+    uintptr_t word = a & ~0x3u;
+    uint32_t off = a & 0x3u;
+    uintptr_t dword = (uintptr_t)elf_iram_word_mirror(word);
+    if(dword != word) return *((volatile uint8_t*)dword + off);
+    /* pure IRAM: not byte-readable, extract from the 32-bit word */
+    return (uint8_t)((*(volatile uint32_t*)word) >> (off * 8));
+}
+
+static inline void elf_iram_write8(void* addr, uint8_t val) {
+    uintptr_t a = (uintptr_t)addr;
+    uintptr_t word = a & ~0x3u;
+    uint32_t off = a & 0x3u;
+    uintptr_t dword = (uintptr_t)elf_iram_word_mirror(word);
+    if(dword != word) {
+        *((volatile uint8_t*)dword + off) = val;
+        return;
+    }
+    /* pure IRAM: 32-bit read-modify-write */
+    uint32_t w = *(volatile uint32_t*)word;
+    w &= ~(0xFFu << (off * 8));
+    w |= ((uint32_t)val << (off * 8));
+    *(volatile uint32_t*)word = w;
+}
+
+static inline uint32_t elf_iram_read32(void* addr) {
+    uintptr_t a = (uintptr_t)addr;
+    if(a & 0x3u) {
+        uint32_t v = 0;
+        for(int i = 0; i < 4; i++) v |= ((uint32_t)elf_iram_read8((uint8_t*)addr + i)) << (i * 8);
+        return v;
+    }
+    return *(volatile uint32_t*)elf_iram_word_mirror(a);
+}
+
+static inline void elf_iram_write32(void* addr, uint32_t val) {
+    uintptr_t a = (uintptr_t)addr;
+    if(a & 0x3u) {
+        for(int i = 0; i < 4; i++) elf_iram_write8((uint8_t*)addr + i, (val >> (i * 8)) & 0xFF);
+        return;
+    }
+    *(volatile uint32_t*)elf_iram_word_mirror(a) = val;
+}
+#else
+#define elf_iram_read8(a)   (*(volatile uint8_t*)(a))
+#define elf_iram_write8(a,v) (*(volatile uint8_t*)(a) = (v))
+#define elf_iram_read32(a)  (*(volatile uint32_t*)(a))
+#define elf_iram_write32(a,v) (*(volatile uint32_t*)(a) = (v))
+#endif
 
 static void elf_file_maybe_release_fd(ELFFile* elf) {
     if(elf->fd) {
@@ -223,18 +434,8 @@ static Elf32_Addr elf_address_of(ELFFile* elf, Elf32_Sym* sym, const char* sName
         ELFSection* symSec = elf_section_of(elf, sym->st_shndx);
         if(symSec) {
             Elf32_Addr addr = ((Elf32_Addr)symSec->data) + sym->st_value;
-            /* Convert addresses in executable sections to instruction bus.
-             * STT_FUNC: named function symbols → code, needs instruction bus
-             * STT_SECTION for .text: section-relative refs that may be function
-             *   pointers (callbacks) → also needs instruction bus.
-             * On ESP32-S3, instruction bus (0x42...) is also readable via icache
-             * for data, so this is safe for both code and data access patterns. */
-            if(ELF32_ST_TYPE(sym->st_info) == STT_FUNC) {
+            if(symSec->is_code) {
                 addr = PSRAM_DATA_TO_INST(addr);
-            } else if(ELF32_ST_TYPE(sym->st_info) == STT_SECTION) {
-                if(sName[0] == '.' && sName[1] == 't' && sName[2] == 'e') {
-                    addr = PSRAM_DATA_TO_INST(addr);
-                }
             }
             return addr;
         }
@@ -277,151 +478,92 @@ static bool elf_relocate_slot0(Elf32_Addr relAddr, Elf32_Addr symAddr, Elf32_Swo
     /* relAddr is a data-bus address (writable). But at runtime the CPU fetches
      * instructions from the instruction bus. PC-relative offsets must use
      * instruction-bus addresses for both PC and target. */
-    Elf32_Addr instPC = PSRAM_DATA_TO_INST(relAddr);
-    Elf32_Addr target = symAddr + addend;
-    /* If target is also in PSRAM data-bus (internal code reference), convert */
+    uint32_t instPC = PSRAM_DATA_TO_INST(relAddr);
+    uint32_t target = symAddr + addend;
     target = PSRAM_DATA_TO_INST(target);
 
-    uint8_t* insn = (uint8_t*)relAddr;
+    /* Use safe IRAM read for the opcode bits */
+    uint8_t insn0 = elf_iram_read8((void*)relAddr);
 
-    /* Xtensa instructions are either 2 bytes (narrow) or 3 bytes (wide).
-     * Narrow instructions have bits [3:0] of byte 0 in {0x8..0xF} (bit 3 set).
-     * Wide instructions have bits [3:0] of byte 0 in {0x0..0x7} (bit 3 clear). */
-
-    if(insn[0] & 0x08) {
-        /* Narrow (2-byte) instruction - branches like BEQZ.N, BNEZ.N, etc.
-         * These have very short ranges and rarely appear in SLOT0_OP relocations.
-         * For now log and skip. */
+    if(insn0 & 0x08) {
         FURI_LOG_D(TAG, "  SLOT0_OP narrow insn at 0x%08X, skipping", (unsigned int)relAddr);
         return true;
     }
 
-    /* Wide (3-byte) instruction */
-    uint8_t op0 = insn[0] & 0x0F;
+    /* Wide (3-byte) instruction opcode */
+    uint8_t op0 = insn0 & 0x0F;
 
     if(op0 == 0x01) {
-        /* L32R instruction: loads 32-bit value from literal pool.
-         * Xtensa-Encoding: vAddr = ((PC+3) & ~3) + 0xFFFC0000 + (imm16 << 2)
-         * Damit ist der Offset IMMER negativ und im Bereich [-262144, -4] bytes
-         * (256 KB rückwärts), kodiert als unsigned 16-bit imm16 ∈ [0, 65535].
-         * Vorherige Validation prüfte signed 16-bit Range — das blockte
-         * gültige Offsets > 128 KB rückwärts (siehe Doom mit ~134 KB .text).
-         * Auf ESP32-S3 muss L32R die instruction-bus-Adresse benutzen. */
         Elf32_Addr l32r_target = PSRAM_DATA_TO_INST(symAddr + addend);
         Elf32_Addr pc_aligned = (instPC + 3) & ~3;
         int32_t offset = (int32_t)(l32r_target - pc_aligned);
-
-        if(offset & 3) {
-            FURI_LOG_E(TAG, "  L32R target not 4-byte aligned");
-            return false;
-        }
-
+        if(offset & 3) return false;
         int32_t units = offset >> 2;
-        if(units < -65536 || units > -1) {
-            FURI_LOG_E(TAG, "  L32R offset out of range: %d (units=%d)", (int)offset, (int)units);
-            return false;
-        }
-
+        if(units < -65536 || units > -1) return false;
         uint16_t imm16 = (uint16_t)(units & 0xFFFF);
-        insn[1] = (uint8_t)(imm16 & 0xFF);
-        insn[2] = (uint8_t)((imm16 >> 8) & 0xFF);
-        FURI_LOG_D(TAG, "  L32R relocated, offset=%d", (int)offset);
+        elf_iram_write8((uint8_t*)relAddr + 1, (uint8_t)(imm16 & 0xFF));
+        elf_iram_write8((uint8_t*)relAddr + 2, (uint8_t)((imm16 >> 8) & 0xFF));
         return true;
     }
 
     if(op0 == 0x05) {
-        /* CALL0 instruction: PC-relative function call.
-         * target = (PC & ~3) + (sign_ext(offset18) << 2) + 4
-         * Both PC and target must be instruction-bus addresses. */
         Elf32_Addr pc_base = (instPC & ~3) + 4;
         int32_t offset = (int32_t)(target - pc_base);
-
-        if(offset & 3) {
-            FURI_LOG_E(TAG, "  CALL0 target not aligned");
-            return false;
-        }
-
+        if(offset & 3) return false;
         int32_t offset18 = offset >> 2;
-        if(offset18 < -131072 || offset18 > 131071) {
-            FURI_LOG_E(TAG, "  CALL0 offset out of range: %d", (int)offset18);
-            return false;
-        }
-
-        insn[0] = (insn[0] & 0x3F) | (uint8_t)((offset18 & 0x03) << 6);
-        insn[1] = (uint8_t)((offset18 >> 2) & 0xFF);
-        insn[2] = (uint8_t)((offset18 >> 10) & 0xFF);
-        FURI_LOG_D(TAG, "  CALL0 relocated, offset=%d", (int)offset18);
+        if(offset18 < -131072 || offset18 > 131071) return false;
+        uint8_t i0 = elf_iram_read8((void*)relAddr);
+        elf_iram_write8((uint8_t*)relAddr + 0, (i0 & 0x3F) | (uint8_t)((offset18 & 0x03) << 6));
+        elf_iram_write8((uint8_t*)relAddr + 1, (uint8_t)((offset18 >> 2) & 0xFF));
+        elf_iram_write8((uint8_t*)relAddr + 2, (uint8_t)((offset18 >> 10) & 0xFF));
         return true;
     }
 
     if(op0 == 0x06) {
-        /* Branch/Jump instructions with various sub-opcodes.
-         * J (unconditional jump): op0=0x06, typically not common in SLOT0_OP.
-         * For now handle J: offset18 encoding same as CALL but no +4 */
-        uint8_t sub = (insn[0] >> 4) & 0x0F;
+        uint8_t i0 = elf_iram_read8((void*)relAddr);
+        uint8_t sub = (i0 >> 4) & 0x0F;
         if(sub == 0x00) {
-            /* J instruction - PC-relative jump, use instruction bus addresses */
-            int32_t offset = (int32_t)(target - (instPC + 4));
-            int32_t offset18 = offset;
-
-            if(offset18 < -131072 || offset18 > 131071) {
-                FURI_LOG_E(TAG, "  J offset out of range");
-                return false;
-            }
-
-            insn[0] = (insn[0] & 0x3F) | (uint8_t)((offset18 & 0x03) << 6);
-            insn[1] = (uint8_t)((offset18 >> 2) & 0xFF);
-            insn[2] = (uint8_t)((offset18 >> 10) & 0xFF);
-            FURI_LOG_D(TAG, "  J relocated");
+            int32_t offset18 = (int32_t)(target - (instPC + 4));
+            if(offset18 < -131072 || offset18 > 131071) return false;
+            elf_iram_write8((uint8_t*)relAddr + 0, (i0 & 0x3F) | (uint8_t)((offset18 & 0x03) << 6));
+            elf_iram_write8((uint8_t*)relAddr + 1, (uint8_t)((offset18 >> 2) & 0xFF));
+            elf_iram_write8((uint8_t*)relAddr + 2, (uint8_t)((offset18 >> 10) & 0xFF));
             return true;
         }
     }
 
-    /* For other SLOT0_OP instruction types (conditional branches, etc.),
-     * log a warning but don't fail - many are internal section references
-     * that were already resolved by the partial linker. */
-    FURI_LOG_D(
-        TAG,
-        "  SLOT0_OP: unhandled opcode 0x%02X at 0x%08X (op0=0x%X)",
-        insn[0],
-        (unsigned int)relAddr,
-        op0);
+    FURI_LOG_D(TAG, "  SLOT0_OP: unhandled opcode 0x%02X at 0x%08X", (unsigned int)insn0, (unsigned int)relAddr);
     return true;
 }
 
 static bool
-    elf_relocate_symbol(ELFFile* elf, Elf32_Addr relAddr, int type, Elf32_Addr symAddr, Elf32_Sword addend) {
+elf_relocate_symbol(ELFFile* elf, Elf32_Addr relAddr, int type, Elf32_Addr symAddr, Elf32_Sword addend) {
     UNUSED(elf);
 
     switch(type) {
     case R_XTENSA_32:
-        /* Xtensa R_XTENSA_32: result = S + A + existing_value
-         * Unlike standard RELA where existing value is ignored,
-         * Xtensa adds the pre-existing content to S + A.
-         * This is critical for section-relative refs where the offset
-         * is stored in the memory and the section base comes from S+A. */
-        *((uint32_t*)relAddr) += symAddr + addend;
-        FURI_LOG_D(TAG, "  R_XTENSA_32 relocated is 0x%08X", (unsigned int)*((uint32_t*)relAddr));
+        elf_iram_write32((void*)relAddr, elf_iram_read32((void*)relAddr) + symAddr + addend);
         break;
     case R_XTENSA_SLOT0_OP:
         return elf_relocate_slot0(relAddr, symAddr, addend);
     case R_XTENSA_ASM_EXPAND:
-        /* Assembler expansion marker - no-op at link time */
         break;
     case R_XTENSA_DIFF8:
-        *((uint8_t*)relAddr) += (uint8_t)(symAddr + addend);
-        FURI_LOG_D(TAG, "  R_XTENSA_DIFF8 relocated");
+        elf_iram_write8((void*)relAddr, elf_iram_read8((void*)relAddr) + (uint8_t)(symAddr + addend));
         break;
-    case R_XTENSA_DIFF16:
-        *((uint16_t*)relAddr) += (uint16_t)(symAddr + addend);
-        FURI_LOG_D(TAG, "  R_XTENSA_DIFF16 relocated");
+    case R_XTENSA_DIFF16: {
+        uint16_t v = elf_iram_read8((uint8_t*)relAddr) | (elf_iram_read8((uint8_t*)relAddr + 1) << 8);
+        v += (uint16_t)(symAddr + addend);
+        elf_iram_write8((uint8_t*)relAddr, v & 0xFF);
+        elf_iram_write8((uint8_t*)relAddr + 1, (v >> 8) & 0xFF);
         break;
+    }
     case R_XTENSA_DIFF32:
-        *((uint32_t*)relAddr) += (uint32_t)(symAddr + addend);
-        FURI_LOG_D(TAG, "  R_XTENSA_DIFF32 relocated");
+        elf_iram_write32((void*)relAddr, elf_iram_read32((void*)relAddr) + (uint32_t)(symAddr + addend));
         break;
     case R_XTENSA_NONE:
         break;
+
     default:
         FURI_LOG_E(TAG, "  Unsupported Xtensa relocation type %d", type);
         return false;
@@ -553,31 +695,143 @@ static ELFLoadSectionResult
     }
 
 #ifdef ESP_PLATFORM
-    /* Force PSRAM allocation so PSRAM_DATA_TO_INST (0x3C->0x42) works.
-     * Internal DRAM (0x3FC...) has a different instruction bus mapping
-     * that our simple offset conversion doesn't handle. */
+#if defined(CONFIG_IDF_TARGET_ESP32)
+    if(section_header->sh_flags & SHF_EXECINSTR) {
+        /* On original ESP32, PSRAM execution is highly restrictive (mapped via fixed MMU).
+         * Internal IRAM is the only reliable way to execute dynamically loaded code. 
+         * We allocate from IRAM and will use the DRAM mirror for relocations. */
+        size_t alloc_size = (section_header->sh_size + 3) & ~3;
+        FURI_LOG_I(TAG, "    EXEC heap: need %zu, free %u, largest block %u",
+            alloc_size,
+            (unsigned)heap_caps_get_free_size(MALLOC_CAP_EXEC),
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_EXEC));
+
+        /* Prefer the reserved contiguous pool (big FAPs only fit here); fall back to the
+         * general exec heap for small FAPs or if the pool is full/unavailable. */
+        section->data = fap_exec_pool_alloc(alloc_size, section_header->sh_addralign);
+        if(section->data) {
+            FURI_LOG_I(TAG, "    Code section: %lu/%zu bytes in POOL @ %p",
+                (unsigned long)section_header->sh_size, alloc_size, section->data);
+        } else {
+            section->data = heap_caps_aligned_alloc(
+                section_header->sh_addralign,
+                alloc_size,
+                MALLOC_CAP_INTERNAL | MALLOC_CAP_32BIT | MALLOC_CAP_EXEC);
+            if(section->data) {
+                FURI_LOG_I(TAG, "    Code section: %lu/%zu bytes in IRAM @ %p",
+                    (unsigned long)section_header->sh_size, alloc_size, section->data);
+            }
+        }
+
+        if(!section->data) {
+            FURI_LOG_E(TAG, "    Failed to allocate %lu bytes for IRAM code section",
+                (unsigned long)section_header->sh_size);
+            return ELFLoadSectionResultNoMemory;
+        }
+        goto section_allocated;
+    }
+    /* Data sections go to PSRAM */
     section->data = heap_caps_aligned_alloc(
         section_header->sh_addralign,
         section_header->sh_size,
-        MALLOC_CAP_SPIRAM);
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    uint32_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    if(section_header->sh_flags & SHF_EXECINSTR) {
+        /* S3/Other targets handle execution from PSRAM well */
+        size_t alloc_size = (section_header->sh_size + 3) & ~3;
+        section->data = heap_caps_aligned_alloc(
+            section_header->sh_addralign,
+            alloc_size,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        
+        if(section->data) {
+            FURI_LOG_I(TAG, "    Code section: %lu/%zu bytes in PSRAM @ %p",
+                (unsigned long)section_header->sh_size, alloc_size, section->data);
+        }
+        if(!section->data) {
+            return ELFLoadSectionResultNoMemory;
+        }
+        goto section_allocated;
+    }
+    section->data = heap_caps_aligned_alloc(
+        section_header->sh_addralign,
+        section_header->sh_size,
+        caps);
+#endif
     if(!section->data) {
-        /* Fallback to any available memory */
-        section->data = aligned_malloc(section_header->sh_size, section_header->sh_addralign);
+        /* Fallback: try any 8-bit capable memory */
+        section->data = heap_caps_aligned_alloc(
+            section_header->sh_addralign,
+            section_header->sh_size,
+            MALLOC_CAP_8BIT);
     }
 #else
     section->data = aligned_malloc(section_header->sh_size, section_header->sh_addralign);
 #endif
+
+#if defined(CONFIG_IDF_TARGET_ESP32)
+section_allocated:
+#endif
+    if(!section->data) {
+        FURI_LOG_E(TAG, "    Failed to allocate %lu bytes for section",
+            (unsigned long)section_header->sh_size);
+        return ELFLoadSectionResultNoMemory;
+    }
     section->size = section_header->sh_size;
 
     if(section_header->sh_type == SHT_NOBITS) {
-        // BSS section, no data to load. heap_caps_aligned_alloc(SPIRAM)
-        // does NOT zero memory — only the aligned_malloc fallback does (it
-        // uses calloc via memmgr.h's redefine). Zero explicitly so static
-        // BSS variables in FAPs are NULL/0 as the C standard demands.
+        /* BSS section: zero memory. heap_caps_aligned_alloc does NOT zero.
+         * IRAM requires 32-bit aligned access via DRAM mirror on ESP32. */
+#if defined(CONFIG_IDF_TARGET_ESP32)
+        if((section_header->sh_flags & SHF_EXECINSTR) &&
+           esp_ptr_internal(section->data)) {
+            /* IRAM: per-word mirror conversion (handles D/IRAM word inversion) */
+            uint32_t* base = (uint32_t*)section->data;
+            for(size_t i = 0; i < (section_header->sh_size + 3) / 4; i++) {
+                elf_iram_write32(base + i, 0);
+            }
+        } else {
+            memset(section->data, 0, section_header->sh_size);
+        }
+#else
         memset(section->data, 0, section_header->sh_size);
+#endif
         return ELFLoadSectionResultSuccess;
     }
 
+#if defined(CONFIG_IDF_TARGET_ESP32)
+    if((section_header->sh_flags & SHF_EXECINSTR) &&
+       esp_ptr_internal(section->data)) {
+        /* IRAM safe-copy: read into DRAM temp buffer first, then copy
+         * with 32-bit aligned writes via DRAM mirror. Direct storage_file_read 
+         * into I-bus range causes LoadStoreError on ESP32. */
+        size_t alloc_size = (section_header->sh_size + 3) & ~3;
+        void* temp = malloc(alloc_size);
+        if(!temp) return ELFLoadSectionResultError;
+        if((!storage_file_seek(elf->fd, section_header->sh_offset, true)) ||
+           (storage_file_read(elf->fd, temp, section_header->sh_size) != section_header->sh_size)) {
+            free(temp);
+            FURI_LOG_E(TAG, "    seek/read fail (IRAM safe copy)");
+            return ELFLoadSectionResultError;
+        }
+        /* Zero any padding at the end of the temp buffer to be safe */
+        if(alloc_size > section_header->sh_size) {
+            memset((uint8_t*)temp + section_header->sh_size, 0, alloc_size - section_header->sh_size);
+        }
+        uint32_t* src = (uint32_t*)temp;
+        /* Per-word mirror conversion: D/IRAM is word-inverted, so each word must be converted
+         * individually (a single base conversion + ascending writes would scramble the code --
+         * that was the StoreProhibited crash when loading into the D/IRAM pool). */
+        uint32_t* base = (uint32_t*)section->data;
+        for(size_t i = 0; i < alloc_size / 4; i++) {
+            elf_iram_write32(base + i, src[i]);
+        }
+        free(temp);
+        return ELFLoadSectionResultSuccess;
+    }
+    /* PSRAM code or data sections: byte-accessible, read directly */
+#endif
     if((!storage_file_seek(elf->fd, section_header->sh_offset, true)) ||
        (storage_file_read(elf->fd, section->data, section_header->sh_size) !=
         section_header->sh_size)) {
@@ -644,6 +898,7 @@ static SectionTypeInfo elf_preload_section(
         }
 
         info.type = SectionTypeData;
+        section_p->is_code = (section_header->sh_flags & SHF_EXECINSTR) != 0;
         info.result = elf_load_section_data(elf, section_p, section_header);
 
         if(info.result != ELFLoadSectionResultSuccess) {
@@ -807,7 +1062,15 @@ void elf_file_free(ELFFile* elf) {
             ELFSectionDict_next(it)) {
             const ELFSectionDict_itref_t* itref = ELFSectionDict_cref(it);
 #ifdef ESP_PLATFORM
+#if defined(CONFIG_IDF_TARGET_ESP32)
+            if(fap_exec_pool_contains(itref->value.data)) {
+                fap_exec_pool_free(itref->value.data);
+            } else if(itref->value.data) {
+                heap_caps_free(itref->value.data);
+            }
+#else
             if(itref->value.data) heap_caps_free(itref->value.data);
+#endif
 #else
             aligned_free(itref->value.data);
 #endif
@@ -1116,6 +1379,7 @@ void elf_file_init_debug_info(ELFFile* elf, ELFDebugInfo* debug_info) {
         if(data_ptr) {
             ELFMemoryMapEntry* entry = &debug_info->mmap_entries[mmap_entry_idx];
             entry->address = (uint32_t)data_ptr;
+            entry->size = itref->value.size;
             entry->name = itref->key;
             mmap_entry_idx++;
         }

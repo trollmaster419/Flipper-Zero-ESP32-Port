@@ -4,6 +4,7 @@
 /* App entry points */
 extern int32_t about_app(void* p);
 extern int32_t archive_app(void* p);
+extern int32_t other_os_app(void* p);
 
 #define FLIPPER_ARCHIVE_DEF                     \
     {                                           \
@@ -22,6 +23,14 @@ const FlipperInternalApplication FLIPPER_APPS[] = {
         .icon = &A_Settings_14,
         .app = about_app,
         .stack_size = 4096,
+        .flags = FlipperInternalApplicationFlagDefault,
+    },
+    {
+        .appid = "other_os",
+        .name = "Bruce",
+        .icon = &A_Plugins_14,
+        .app = other_os_app,
+        .stack_size = 2 * 1024,
         .flags = FlipperInternalApplicationFlagDefault,
     },
 };

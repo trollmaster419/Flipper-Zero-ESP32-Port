@@ -100,6 +100,28 @@ void furi_hal_bt_reinit(void) {
     gap_event_ctx = NULL;
 }
 
+#include <esp_bt_main.h>
+#include <esp_bt.h>
+
+void furi_hal_bt_suspend(void) {
+    ESP_LOGI(TAG, "Suspending Bluetooth stack for WLAN mode...");
+    if(esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_ENABLED) {
+        esp_bluedroid_disable();
+        esp_bluedroid_deinit();
+    }
+    if(esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED) {
+        esp_bt_controller_disable();
+        esp_bt_controller_deinit();
+    }
+    ESP_LOGI(TAG, "Bluetooth stack suspended.");
+}
+
+void furi_hal_bt_resume(void) {
+    ESP_LOGI(TAG, "Resuming Bluetooth stack...");
+    // The profiles (hid/serial) re-init the stack on their next start if needed.
+    ESP_LOGI(TAG, "Bluetooth stack resume ready.");
+}
+
 FuriHalBleProfileBase* furi_hal_bt_change_app(
     const FuriHalBleProfileTemplate* profile_template,
     FuriHalBleProfileParams params,

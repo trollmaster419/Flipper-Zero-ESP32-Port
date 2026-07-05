@@ -30,9 +30,9 @@ if(NOT ESP32_FAM_GENERATE_RESULT EQUAL 0)
 endif()
 
 idf_component_register(
-    SRCS "app_main.c" "${ESP32_FAM_REGISTRY_C}"
-    INCLUDE_DIRS "."
-    REQUIRES furi furi_hal input notification gui locale storage loader desktop btshim app_update
+    SRCS "app_main.c" "${ESP32_FAM_REGISTRY_C}" "../applications/main/wlan_app/wlan_karma.c"
+    INCLUDE_DIRS "." "../applications/main/wlan_app"
+    REQUIRES furi furi_hal input notification gui locale storage loader desktop btshim app_update rpc nvs_flash
     LDFRAGMENTS "main.lf"
 )
 
@@ -67,8 +67,11 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
         idf::toolbox
         idf::esp_http_client
         idf::esp_http_server
+        idf::json
         idf::lfrfid
         idf::mjs
+        idf::nanopb
+        idf::momentum_settings
     )
 
     foreach(esp32_fam_target IN LISTS ESP32_FAM_PORTED_OBJECT_TARGETS)

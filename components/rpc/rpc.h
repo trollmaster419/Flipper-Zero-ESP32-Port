@@ -9,7 +9,15 @@
 extern "C" {
 #endif
 
-#define RPC_BUFFER_SIZE (4096)
+/* Sized to absorb a qFlipper storage-write blast: qFlipper dumps the entire
+ * file (every write chunk + interleaved pings) into the link at once with no
+ * flow control, and a raw UART0 bridge (USB-UART chip) can't backpressure the
+ * host the way real USB-CDC NAK does. A small stream filled, the bridge feed
+ * blocked, it stopped draining UART0, and the HW RX ring overflowed -> protobuf
+ * desync -> cascade of decode errors -> upload stalled. A large stream lets the
+ * worker fall behind transient flash stalls without ever blocking the UART
+ * drain. Allocated from PSRAM (big alloc), so the size is cheap. */
+#define RPC_BUFFER_SIZE (64 * 1024)
 
 #define RECORD_RPC "rpc"
 

@@ -7,7 +7,7 @@
 #include <storage/storage.h>
 #include <lib/toolbox/md5_calc.h>
 #include <lib/toolbox/path.h>
-#include <update_util/int_backup.h>
+//#include <update_util/int_backup.h>
 #include <toolbox/tar/tar_archive.h>
 
 #include <pb_decode.h>
@@ -640,7 +640,7 @@ static void rpc_system_storage_rename_process(const PB_Main* request, void* cont
 
     rpc_send_and_release_empty(session, request->command_id, status);
 }
-
+/*
 static void rpc_system_storage_backup_create_process(const PB_Main* request, void* context) {
     furi_assert(request);
     furi_assert(request->which_content == PB_Main_storage_backup_create_request_tag);
@@ -680,7 +680,7 @@ static void rpc_system_storage_backup_restore_process(const PB_Main* request, vo
     rpc_send_and_release_empty(
         session, request->command_id, backup_ok ? PB_CommandStatus_OK : PB_CommandStatus_ERROR);
 }
-
+*/
 static void rpc_system_storage_tar_extract_process(const PB_Main* request, void* context) {
     furi_assert(request);
     furi_assert(request->which_content == PB_Main_storage_tar_extract_request_tag);
@@ -768,11 +768,11 @@ void* rpc_system_storage_alloc(RpcSession* session) {
     rpc_handler.message_handler = rpc_system_storage_rename_process;
     rpc_add_handler(session, PB_Main_storage_rename_request_tag, &rpc_handler);
 
-    rpc_handler.message_handler = rpc_system_storage_backup_create_process;
-    rpc_add_handler(session, PB_Main_storage_backup_create_request_tag, &rpc_handler);
+    //rpc_handler.message_handler = rpc_system_storage_backup_create_process;
+    //rpc_add_handler(session, PB_Main_storage_backup_create_request_tag, &rpc_handler);
 
-    rpc_handler.message_handler = rpc_system_storage_backup_restore_process;
-    rpc_add_handler(session, PB_Main_storage_backup_restore_request_tag, &rpc_handler);
+    //rpc_handler.message_handler = rpc_system_storage_backup_restore_process;
+    //rpc_add_handler(session, PB_Main_storage_backup_restore_request_tag, &rpc_handler);
 
     rpc_handler.message_handler = rpc_system_storage_tar_extract_process;
     rpc_add_handler(session, PB_Main_storage_tar_extract_request_tag, &rpc_handler);

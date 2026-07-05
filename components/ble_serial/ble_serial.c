@@ -690,7 +690,6 @@ static void serial_gatts_event_handler(
             }
             serial_unlock(serial);
 
-            uint16_t new_bytes_ready = 0;
             if(cb) {
                 SerialServiceEvent ev = {
                     .event = SerialServiceEventTypeDataReceived,
@@ -699,16 +698,17 @@ static void serial_gatts_event_handler(
                         .size = param->write.len,
                     },
                 };
-                new_bytes_ready = cb(ev, ctx);
-            }
-
-            /* Update internal flow tracking.
-             * Don't send a notification here — STM32 only sends flow
-             * notifications via notify_buffer_is_empty callback. */
-            if(new_bytes_ready > 0) {
-                serial_lock(serial);
-                serial->bytes_ready = new_bytes_ready;
-                serial_unlock(serial);
+                /* The callback's return value (free space in the RX feeder
+                 * stream) is deliberately discarded. Flow-control credits are
+                 * tracked by `bytes_ready`, decremented above as the client
+                 * spends its window and refilled in
+                 * ble_serial_notify_buffer_is_empty once the RPC consumer has
+                 * fully drained. Overwriting bytes_ready with the feeder's free
+                 * space — which the feeder thread keeps draining, so it is almost
+                 * never 0 — defeated that refill: bytes_ready never reached 0, the
+                 * "buffer empty" notification was never sent, and large transfers
+                 * stalled after the first window (truncated/half-written files). */
+                (void)cb(ev, ctx);
             }
 
             if(!param->write.is_prep) {

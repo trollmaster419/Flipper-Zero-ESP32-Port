@@ -26,37 +26,41 @@ static void wlan_smart_deauth_view_draw(Canvas* canvas, void* model) {
 
     const int bar_y = 40;
     const int ch_width = 9;
-    const int box_size = 6;
-    const int box_y = 51;
+    const int box_w = 6;
+    const int box_h = 5;
+    const int step = box_h + 1;   /* vertical spacing between stacked boxes */
+    const int box_y = 51;         /* bottom baseline of each stack */
+    const int max_stack = 4;      /* visual cap; "+" marks any beyond this */
 
+    canvas_set_color(canvas, ColorBlack);
     for (int ch = 1; ch <= 13; ch++) {
         int x = 3 + (ch - 1) * ch_width;
 
-        if (m->ap_counts[ch] > 0) {
-            bool is_target = false;
-            for (uint8_t i = 0; i < m->active_count; i++) {
-                if (m->active_channels[i] == ch) {
-                    is_target = true;
-                    break;
-                }
-            }
+        uint8_t total = m->ap_counts[ch];
+        if (total == 0) continue;
 
-            if (is_target) {
-                canvas_set_color(canvas, ColorWhite);
-                canvas_draw_box(canvas, x, box_y - box_size, box_size, box_size);
-                canvas_set_color(canvas, ColorBlack);
-                for (int dy = 0; dy < box_size; dy++) {
-                    for (int dx = 0; dx < box_size; dx++) {
-                        if ((dx + dy) % 2 == 0) {
-                            canvas_draw_dot(canvas, x + dx, box_y - box_size + dy);
-                        }
-                    }
-                }
-                canvas_draw_frame(canvas, x-1, box_y - box_size -1, box_size+2, box_size+2);
-            } else {
-                canvas_set_color(canvas, ColorBlack);
-                canvas_draw_box(canvas, x, box_y - box_size, box_size, box_size);
+        bool is_target = false;
+        for (uint8_t i = 0; i < m->active_count; i++) {
+            if (m->active_channels[i] == ch) {
+                is_target = true;
+                break;
             }
+        }
+
+        uint8_t shown = total > max_stack ? max_stack : total;
+        /* One box per AP, stacked upward. Target (attacked) channel = solid
+         * filled; merely-detected channels = hollow outline. */
+        for (uint8_t k = 0; k < shown; k++) {
+            int by = box_y - box_h - k * step;
+            if (is_target) {
+                canvas_draw_box(canvas, x, by, box_w, box_h);
+            } else {
+                canvas_draw_frame(canvas, x, by, box_w, box_h);
+            }
+        }
+        /* More APs than we can stack: mark with a dot above the top box. */
+        if (total > max_stack) {
+            canvas_draw_dot(canvas, x + box_w / 2, box_y - box_h - max_stack * step - 1);
         }
     }
 

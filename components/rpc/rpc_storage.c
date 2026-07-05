@@ -114,6 +114,12 @@ static void rpc_system_storage_info_process(const PB_Main* request, void* contex
 
     rpc_system_storage_reset_state(rpc_storage, session, true);
 
+    if(!request->content.storage_info_request.path) {
+        rpc_send_and_release_empty(
+            session, request->command_id, PB_CommandStatus_ERROR_INVALID_PARAMETERS);
+        return;
+    }
+
     PB_Main* response = malloc(sizeof(PB_Main));
     response->command_id = request->command_id;
 
@@ -147,6 +153,12 @@ static void rpc_system_storage_timestamp_process(const PB_Main* request, void* c
 
     rpc_system_storage_reset_state(rpc_storage, session, true);
 
+    if(!request->content.storage_timestamp_request.path) {
+        rpc_send_and_release_empty(
+            session, request->command_id, PB_CommandStatus_ERROR_INVALID_PARAMETERS);
+        return;
+    }
+
     PB_Main* response = malloc(sizeof(PB_Main));
     response->command_id = request->command_id;
 
@@ -178,6 +190,12 @@ static void rpc_system_storage_stat_process(const PB_Main* request, void* contex
     furi_assert(session);
 
     rpc_system_storage_reset_state(rpc_storage, session, true);
+
+    if(!request->content.storage_stat_request.path) {
+        rpc_send_and_release_empty(
+            session, request->command_id, PB_CommandStatus_ERROR_INVALID_PARAMETERS);
+        return;
+    }
 
     PB_Main* response = malloc(sizeof(PB_Main));
     response->command_id = request->command_id;
@@ -263,6 +281,12 @@ static void rpc_system_storage_list_process(const PB_Main* request, void* contex
 
     rpc_system_storage_reset_state(rpc_storage, session, true);
 
+    if(!list_request->path) {
+        rpc_send_and_release_empty(
+            session, request->command_id, PB_CommandStatus_ERROR_INVALID_PARAMETERS);
+        return;
+    }
+
     if(!strcmp(list_request->path, "/")) {
         rpc_system_storage_list_root(request, context);
         return;
@@ -304,7 +328,7 @@ static void rpc_system_storage_list_process(const PB_Main* request, void* contex
                     i = 0;
                 }
                 list->file[i].type = file_info_is_dir(&fileinfo) ? PB_Storage_File_FileType_DIR :
-                                                                   PB_Storage_File_FileType_FILE;
+                                                                     PB_Storage_File_FileType_FILE;
                 list->file[i].size = fileinfo.size;
                 list->file[i].data = NULL;
                 list->file[i].name = name;

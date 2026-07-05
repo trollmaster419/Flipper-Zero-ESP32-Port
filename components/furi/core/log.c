@@ -85,6 +85,16 @@ bool furi_log_remove_handler(FuriLogHandler handler) {
     return ret;
 }
 
+static volatile bool furi_log_console_muted = false;
+
+void furi_log_set_console_muted(bool muted) {
+    furi_log_console_muted = muted;
+}
+
+bool furi_log_is_console_muted(void) {
+    return furi_log_console_muted;
+}
+
 void furi_log_tx(const uint8_t* data, size_t size) {
     if(!FURI_IS_ISR()) {
         furi_check(furi_mutex_acquire(furi_log.mutex, FuriWaitForever) == FuriStatusOk);

@@ -1,0 +1,11 @@
+App(
+    appid="unzipper",
+    name="Unzipper",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="unzipper_app",
+    cdefines=["APP_UNZIPPER"],
+    requires=["gui", "storage", "dialogs"],
+    stack_size=8 * 1024,
+    order=20,
+    fap_category="Tools",
+)

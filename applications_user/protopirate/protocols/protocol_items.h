@@ -3,14 +3,8 @@
 
 #include <lib/subghz/types.h>
 
-#include "kia_generic.h"
 #include "scher_khan.h"
-#include "kia_v0.h"
-#include "kia_v1.h"
-#include "kia_v2.h"
-#include "kia_v3_v4.h"
-#include "kia_v5.h"
-#include "kia_v6.h"
+// kia_generic.h + kia_v0..v6.h stripped on classic ESP32 to fit the exec pool
 #include "ford_v0.h"
 #include "fiat_v0.h"
 #include "fiat_v1.h"
@@ -19,9 +13,7 @@
 #include "porsche_touareg.h"
 #include "subaru.h"
 #include "suzuki.h"
-#include "vag.h"
-#include "star_line.h"
-#include "psa.h"
+// vag.h / star_line.h / psa.h stripped on classic ESP32 to fit the exec pool
 
 extern const SubGhzProtocolRegistry protopirate_protocol_registry;
 

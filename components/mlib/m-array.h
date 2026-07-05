@@ -879,7 +879,7 @@
       /* Increase th for next pass */                                         \
       th += th;                                                               \
     }                                                                         \
-    M_ASSERT (org_tab == tab);                                                \
+    M_IF_DEBUG(M_ASSERT (org_tab == tab);)                                    \
   }                                                                           \
                                                                               \
   static inline void                                                          \

@@ -8,6 +8,10 @@
 #define BOARD_PIN_QWIIC_SDA     26
 #define BOARD_PIN_QWIIC_SCL     25
 
+/* Internal I2C bus for IMU (MPU6886 / SH200Q) and AXP192 */
+#define BOARD_PIN_IMU_SDA       21
+#define BOARD_PIN_IMU_SCL       22
+
 #define BOARD_PIN_BUTTON_A      37
 #define BOARD_PIN_BUTTON_B      39
 #define BOARD_PIN_BUTTON_BOOT   35
@@ -77,6 +81,7 @@
 #define BOARD_HAS_TOUCH         0
 #define BOARD_HAS_SD_CARD       0
 #define BOARD_HAS_BLE           1
+#define BOARD_HAS_IMU           1
 #define BOARD_HAS_RGB_LED       0
 #define BOARD_HAS_VIBRO         0
 #define BOARD_HAS_SPEAKER       0

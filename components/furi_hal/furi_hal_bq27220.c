@@ -31,6 +31,7 @@ static const char* TAG = "BQ27220";
 #if defined(BOARD_PIN_QWIIC_SDA) && defined(BOARD_PIN_QWIIC_SCL)
 #define BQ_I2C_FREQ_HZ  100000
 #define BQ_I2C_TIMEOUT  (1000 / portTICK_PERIOD_MS)
+#define BQ_I2C_PORT     BOARD_NFC_I2C_PORT
 #else
 #define BQ_I2C_PORT     I2C_NUM_0
 #define BQ_I2C_SDA      8

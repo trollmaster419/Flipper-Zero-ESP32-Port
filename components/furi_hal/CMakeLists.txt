@@ -41,6 +41,7 @@ set(FURI_HAL_SRCS
     "furi_hal_rfid.c"
     "furi_hal_bq27220.c"
     "furi_hal_bq25896.c"
+    "furi_hal_axp192.c"
     "fatfs_compat.c"
 )
 

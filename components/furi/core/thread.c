@@ -67,7 +67,33 @@ struct FuriThread {
 
     bool is_service;
     bool heap_trace_enabled;
+    bool stack_from_pool; /* stack came from the registered exec-pool allocator, not the heap */
 };
+
+/* Optional external stack allocator (registered by the FAP loader's exec pool). Used as a
+ * fallback when internal RAM can't satisfy a thread stack: the pool is contiguous internal
+ * D/IRAM reserved at boot, so it stays cache-safe (a PSRAM stack DoubleExceptions the moment
+ * the owner touches flash with the cache disabled). */
+static FuriThreadStackAllocator furi_thread_ext_stack_alloc = NULL;
+static FuriThreadStackDeallocator furi_thread_ext_stack_free = NULL;
+
+void furi_thread_set_ext_stack_allocator(
+    FuriThreadStackAllocator alloc,
+    FuriThreadStackDeallocator dealloc) {
+    furi_thread_ext_stack_alloc = alloc;
+    furi_thread_ext_stack_free = dealloc;
+}
+
+static void furi_thread_free_stack(FuriThread* thread) {
+    if(!thread->stack_buffer) return;
+    if(thread->stack_from_pool) {
+        if(furi_thread_ext_stack_free) furi_thread_ext_stack_free(thread->stack_buffer);
+    } else {
+        heap_caps_free(thread->stack_buffer);
+    }
+    thread->stack_buffer = NULL;
+    thread->stack_from_pool = false;
+}
 
 // IMPORTANT: container MUST be the FIRST struct member
 _Static_assert(offsetof(struct FuriThread, container) == 0, "container must be first member");
@@ -81,11 +107,10 @@ static size_t __furi_thread_stdout_write(FuriThread* thread, const char* data, s
 static int32_t __furi_thread_stdout_flush(FuriThread* thread);
 
 static void furi_thread_diag_low_stack(FuriThread* thread, size_t stack_watermark) {
-    esp_rom_printf(
-        "\r\n[LOWSTACK] thread=%s free=%u min=%u\r\n",
-        thread->name ? thread->name : "<null>",
-        (unsigned)stack_watermark,
-        (unsigned)THREAD_STACK_WATERMARK_MIN);
+    /* No-op: previously esp_rom_printf, which writes raw to UART0 and corrupts
+     * the qFlipper RPC stream. Use FURI_LOG (console-muteable) if needed. */
+    UNUSED(thread);
+    UNUSED(stack_watermark);
 }
 
 /** Catch threads that are trying to exit wrong way */
@@ -218,12 +243,20 @@ FuriThread* furi_thread_alloc_service(
     uint32_t stack_size,
     FuriThreadCallback callback,
     void* context) {
-    FuriThread* thread = memmgr_alloc_from_pool(sizeof(FuriThread));
-    memset(thread, 0, sizeof(FuriThread));
+    /* TCB (StaticTask_t inside FuriThread) must live in internal RAM for FreeRTOS.
+       Service stacks must be internal too: boot-critical services like storage run
+       flash operations with the cache disabled, during which a PSRAM-resident stack
+       is inaccessible and the CPU hangs (observed as a TG1WDT_SYS_RESET bootloop at
+       LittleFS mount). Fall back to PSRAM for the stack only if internal RAM is
+       exhausted. */
+    FuriThread* thread = heap_caps_calloc(1, sizeof(FuriThread), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
     furi_thread_init_common(thread);
 
-    thread->stack_buffer = memmgr_alloc_from_pool(stack_size);
+    thread->stack_buffer = heap_caps_malloc(stack_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if(!thread->stack_buffer) {
+        thread->stack_buffer = heap_caps_malloc(stack_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
     thread->stack_size = stack_size;
     thread->is_service = true;
 
@@ -255,9 +288,7 @@ void furi_thread_free(FuriThread* thread) {
     furi_thread_set_name(thread, NULL);
     furi_thread_set_appid(thread, NULL);
 
-    if(thread->stack_buffer) {
-        free(thread->stack_buffer);
-    }
+    furi_thread_free_stack(thread);
 
     furi_string_free(thread->output.buffer);
     furi_string_free(thread->input.unread_buffer);
@@ -294,20 +325,37 @@ void furi_thread_set_stack_size(FuriThread* thread, size_t stack_size) {
     furi_check(stack_size % sizeof(StackType_t) == 0);
     furi_check(thread->is_service == false);
 
-    if(thread->stack_buffer) {
-        heap_caps_free(thread->stack_buffer);
-    }
+    furi_thread_free_stack(thread);
 
     /* ESP32 needs larger stacks than STM32 (deeper SPI/FATFS call chains) */
     if(stack_size < 4096) stack_size = 4096;
 
-    /* Prefer internal SRAM — flash/NVS writes disable the PSRAM cache and
-       cause a DoubleException on a PSRAM-resident stack. For apps that do
-       not write to flash/NVS (e.g. the Doom port, which only reads from
-       the SD card on a separate SPI bus) we fall back to PSRAM when the
-       internal heap cannot satisfy the request. */
+    /* Prefer internal SRAM — flash/NVS writes disable the PSRAM cache and cause a
+       DoubleException on a PSRAM-resident stack. */
     thread->stack_buffer = heap_caps_malloc(stack_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    thread->stack_from_pool = false;
+
+    if(!thread->stack_buffer && furi_thread_ext_stack_alloc) {
+        /* Big-FAP mode reserves a large exec pool that starves internal RAM, so a 16KB FAP
+           stack can't fit the heap. Pull it from the pool's contiguous internal leftover
+           instead — cache-safe, unlike PSRAM. */
+        thread->stack_buffer = furi_thread_ext_stack_alloc(stack_size);
+        if(thread->stack_buffer) {
+            thread->stack_from_pool = true;
+            FURI_LOG_I(
+                "FuriThread", "stack %u: from exec pool @ %p", (unsigned)stack_size, thread->stack_buffer);
+        }
+    }
+
     if(!thread->stack_buffer) {
+        /* Last resort: PSRAM. Will DoubleException if the owner touches flash with the cache
+           off (SubGHz/storage init) -> "works once, then TG1WDT". Log loudly. */
+        size_t blk = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        FURI_LOG_E(
+            "FuriThread",
+            "stack %u: NO internal RAM (largest int block %u) -> PSRAM, WILL CRASH on flash ops",
+            (unsigned)stack_size,
+            (unsigned)blk);
         thread->stack_buffer = heap_caps_malloc(stack_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     }
     thread->stack_size = stack_size;

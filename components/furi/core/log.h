@@ -65,6 +65,14 @@ bool furi_log_add_handler(FuriLogHandler handler);
  */
 bool furi_log_remove_handler(FuriLogHandler handler);
 
+/** Mute/unmute only the built-in console (ROM UART) log sink, without touching
+ * other handlers (e.g. the CLI `log` command). Used to keep a shared UART clean
+ * for CLI/RPC traffic while a host client (qFlipper) is attached. */
+void furi_log_set_console_muted(bool muted);
+
+/** @return true if the console log sink is currently muted. */
+bool furi_log_is_console_muted(void);
+
 /** Transmit data through log IO callbacks
  *
  * @param[in]  data  The data

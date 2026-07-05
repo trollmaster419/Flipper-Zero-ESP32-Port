@@ -3,6 +3,10 @@
 #include "wlan_cred_sniff.h"
 #include "wlan_hal.h"
 #include "wlan_netcut.h"
+#include "views/wlan_smart_deauth_view.h"
+#include <furi_hal_bt.h>
+
+#include <esp_heap_caps.h> /* TEMP: heap diagnostics for the C6 OOM crash */
 
 static bool wlan_app_custom_event_callback(void* context, uint32_t event) {
     furi_assert(context);
@@ -23,7 +27,8 @@ static void wlan_app_tick_event_callback(void* context) {
 }
 
 static WlanApp* wlan_app_alloc(void) {
-    WlanApp* app = malloc(sizeof(WlanApp));
+    WlanApp* app = heap_caps_malloc(sizeof(WlanApp), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    memset(app, 0, sizeof(WlanApp));
 
     app->gui = furi_record_open(RECORD_GUI);
     app->scene_manager = scene_manager_alloc(&wlan_app_scene_handlers, app);
@@ -80,6 +85,10 @@ static WlanApp* wlan_app_alloc(void) {
     view_set_context(app->view_deauther, app->view_dispatcher);
     view_dispatcher_add_view(app->view_dispatcher, WlanAppViewDeauther, app->view_deauther);
 
+    app->view_smart_deauther = wlan_smart_deauth_view_alloc();
+    view_set_context(app->view_smart_deauther, app->view_dispatcher);
+    view_dispatcher_add_view(app->view_dispatcher, WlanAppViewSmartDeauther, app->view_smart_deauther);
+
     app->sniffer_view_obj = wlan_sniffer_view_alloc();
     app->view_sniffer = wlan_sniffer_view_get_view(app->sniffer_view_obj);
     view_dispatcher_add_view(app->view_dispatcher, WlanAppViewSniffer, app->view_sniffer);
@@ -102,21 +111,37 @@ static WlanApp* wlan_app_alloc(void) {
     view_set_context(app->view_sd_update, app->view_dispatcher);
     view_dispatcher_add_view(app->view_dispatcher, WlanAppViewSdUpdate, app->view_sd_update);
 
+    app->karma_view_obj = wlan_karma_view_alloc();
+    app->view_karma = wlan_karma_view_get_view(app->karma_view_obj);
+    view_dispatcher_add_view(app->view_dispatcher, WlanAppViewKarma, app->view_karma);
 
-    app->ap_records = malloc(sizeof(WlanApRecord) * WLAN_APP_MAX_APS);
+    app->ap_records = heap_caps_malloc(
+        sizeof(WlanApRecord) * WLAN_APP_MAX_APS, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     app->ap_count = 0;
     app->ap_selected_index = 0;
 
-    app->devices = malloc(sizeof(WlanDeviceRecord) * WLAN_APP_MAX_DEVICES);
+    app->devices = heap_caps_malloc(
+        sizeof(WlanDeviceRecord) * WLAN_APP_MAX_DEVICES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     app->device_count = 0;
     app->device_selected_index = 0;
     app->lan_menu_device_idx = -1;
-    app->lan_popup_active = false;
-    app->lan_scan_complete = false;
-
-    memset(app->deauth_clients, 0, sizeof(app->deauth_clients));
+    app->deauth_clients = heap_caps_malloc(
+        sizeof(WlanDeauthClient) * WLAN_APP_MAX_DEAUTH_CLIENTS, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    memset(app->deauth_clients, 0, sizeof(WlanDeauthClient) * WLAN_APP_MAX_DEAUTH_CLIENTS);
     app->deauth_client_count = 0;
+
+    app->evil_portal_cred_queue = heap_caps_malloc(
+        sizeof(WlanAppEvilPortalCred) * WLAN_APP_EVIL_PORTAL_QUEUE_SIZE,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    memset(
+        app->evil_portal_cred_queue,
+        0,
+        sizeof(WlanAppEvilPortalCred) * WLAN_APP_EVIL_PORTAL_QUEUE_SIZE);
+
     app->deauth_auto = false;
+
+    // Reclaim internal RAM from Bluetooth
+    furi_hal_bt_suspend();
 
     strcpy(app->evil_portal_ssid, "Free WiFi");
     app->evil_portal_channel = 6;
@@ -139,7 +164,13 @@ static WlanApp* wlan_app_alloc(void) {
 
     app->text_buf = furi_string_alloc();
     app->netcut = wlan_netcut_alloc();
+    /* TEMP: log heap right before the 15KB cred_sniff alloc that OOM-crashed. */
+    printf(
+        "[WLAN] heap before cred_sniff: free=%u largest_block=%u\n",
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_DEFAULT),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
     app->cred_sniff = wlan_cred_sniff_alloc();
+    printf("[WLAN] cred_sniff=%p\n", (void*)app->cred_sniff);
     wlan_netcut_set_cred_sniff(app->netcut, app->cred_sniff);
     wlan_html_inject_set_cred_sniff(app->cred_sniff);
 
@@ -185,10 +216,12 @@ static void wlan_app_free(WlanApp* app) {
     view_dispatcher_remove_view(app->view_dispatcher, WlanAppViewHandshake);
     view_dispatcher_remove_view(app->view_dispatcher, WlanAppViewHandshakeChannel);
     view_dispatcher_remove_view(app->view_dispatcher, WlanAppViewDeauther);
+    view_dispatcher_remove_view(app->view_dispatcher, WlanAppViewSmartDeauther);
     view_dispatcher_remove_view(app->view_dispatcher, WlanAppViewSniffer);
     view_dispatcher_remove_view(app->view_dispatcher, WlanAppViewEvilPortal);
     view_dispatcher_remove_view(app->view_dispatcher, WlanAppViewEvilPortalCaptured);
     view_dispatcher_remove_view(app->view_dispatcher, WlanAppViewLiveCreds);
+    view_dispatcher_remove_view(app->view_dispatcher, WlanAppViewKarma);
     view_dispatcher_remove_view(app->view_dispatcher, WlanAppViewSdUpdate);
 
     submenu_free(app->submenu);
@@ -203,11 +236,13 @@ static void wlan_app_free(WlanApp* app) {
     wlan_handshake_view_free(app->view_handshake);
     wlan_handshake_channel_view_free(app->view_handshake_channel);
     wlan_deauther_view_free(app->view_deauther);
+    wlan_smart_deauth_view_free(app->view_smart_deauther);
     wlan_sniffer_view_free(app->sniffer_view_obj);
     wlan_evil_portal_view_free(app->evil_portal_view_obj);
     wlan_evil_portal_captured_view_free(app->evil_portal_captured_view_obj);
     wlan_live_creds_view_free(app->live_creds_view_obj);
     wlan_sd_update_view_free(app->view_sd_update);
+    wlan_karma_view_free(app->karma_view_obj);
 
     scene_manager_free(app->scene_manager);
     view_dispatcher_free(app->view_dispatcher);
@@ -217,6 +252,10 @@ static void wlan_app_free(WlanApp* app) {
     furi_string_free(app->text_buf);
 
     furi_record_close(RECORD_GUI);
+
+    // Restore Bluetooth stack
+    furi_hal_bt_resume();
+
     app->gui = NULL;
     free(app);
 }

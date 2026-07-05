@@ -28,6 +28,7 @@
 #include "views/wlan_evil_portal_captured_view.h"
 #include "views/wlan_live_creds_view.h"
 #include "views/wlan_sd_update_view.h"
+#include "views/wlan_karma_view.h"
 
 #define WLAN_APP_TAG "WlanApp"
 #define WLAN_APP_MAX_APS 64
@@ -49,10 +50,12 @@ typedef enum {
     WlanAppViewHandshake,
     WlanAppViewHandshakeChannel,
     WlanAppViewDeauther,
+    WlanAppViewSmartDeauther,
     WlanAppViewSniffer,
     WlanAppViewEvilPortal,
     WlanAppViewEvilPortalCaptured,
     WlanAppViewLiveCreds,
+    WlanAppViewKarma,
     WlanAppViewSdUpdate,
 } WlanAppView;
 
@@ -122,6 +125,7 @@ struct WlanApp {
     View* view_handshake;
     View* view_handshake_channel;
     View* view_deauther;
+    View* view_smart_deauther;
     View* view_sniffer;
     WlanSnifferView* sniffer_view_obj;
     View* view_evil_portal;
@@ -158,9 +162,17 @@ struct WlanApp {
     char evil_portal_valid_ssid[33];
     char evil_portal_valid_pwd[65];
 
+    // Bridge Mode: after creds captured, switch to APSTA and forward client
+    // traffic to an upstream real WiFi network so the victim gets real
+    // internet. Replaces the static "Couldn't sign you in" page with a
+    // delayed redirect to google.com when enabled.
+    bool evil_portal_bridge_enable;
+    char evil_portal_bridge_ssid[33];
+    char evil_portal_bridge_password[65];
+
     // Lock-free Cred-Ring vom Evil-Portal-Callback gefüllt, von der Scene
     // im Tick gelesen.
-    WlanAppEvilPortalCred evil_portal_cred_queue[WLAN_APP_EVIL_PORTAL_QUEUE_SIZE];
+    WlanAppEvilPortalCred* evil_portal_cred_queue;
     volatile uint8_t evil_portal_cred_head;
     volatile uint8_t evil_portal_cred_tail;
     uint32_t evil_portal_cred_total;
@@ -188,9 +200,10 @@ struct WlanApp {
     bool lan_force_rescan;        // true → SD-Cache überspringen, echten ARP-Scan erzwingen
 
     // Deauther-/Sniffer-Picker-Scene-State (shared)
-    WlanDeauthClient deauth_clients[WLAN_APP_MAX_DEAUTH_CLIENTS];
+    WlanDeauthClient* deauth_clients;
     uint8_t deauth_client_count;
     bool deauth_auto;             // Auto-Mode in Deauther-Scene
+    bool deauth_smart;            // Smart-Deauth-Mode aktiv
     char picker_associated_ssid[WLAN_APP_SSID_MAX]; // SSID/Channel-Key der Picker-Liste
 
     // Attack-Targets-Settings (live)
@@ -226,6 +239,10 @@ struct WlanApp {
     bool update_sd_flow;
     WlanSdUpdate* sd_update;
     View* view_sd_update;
+
+    // Karma Attack
+    WlanKarmaView* karma_view_obj;
+    View* view_karma;
 };
 
 /** Schlüssel der aktuellen Picker-Assoziation: Channel-Key im Channel-Mode,

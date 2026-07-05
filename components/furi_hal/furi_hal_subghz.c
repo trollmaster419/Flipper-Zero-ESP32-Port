@@ -479,6 +479,29 @@ void furi_hal_subghz_init(void) {
     furi_hal_subghz.state = FuriHalSubGhzStateIdle;
 }
 
+void furi_hal_subghz_set_spi_config(uint8_t config) {
+    /* config == 1 -> Bruce external module pinout, else board default pins. */
+    if(config == 1) {
+        furi_hal_spi_bus_handle_subghz.miso = &gpio_spi_bruce_miso;
+        furi_hal_spi_bus_handle_subghz.mosi = &gpio_spi_bruce_mosi;
+        furi_hal_spi_bus_handle_subghz.sck = &gpio_spi_bruce_sck;
+        furi_hal_spi_bus_handle_subghz.cs = &gpio_spi_bruce_cs;
+        gpio_cc1101_g0.pin = gpio_spi_bruce_gdo0.pin;
+    } else {
+        furi_hal_spi_bus_handle_subghz.miso = &gpio_ext_pa6;
+        furi_hal_spi_bus_handle_subghz.mosi = &gpio_ext_pa7;
+        furi_hal_spi_bus_handle_subghz.sck = &gpio_ext_pb3;
+        furi_hal_spi_bus_handle_subghz.cs = &gpio_ext_pa4;
+        gpio_cc1101_g0.pin = BOARD_PIN_CC1101_GDO0;
+    }
+
+    /* Drop both the device-handle and bus init flags so the next init re-runs
+     * the GPIO setup with the new pins (handle_init early-returns otherwise). */
+    furi_hal_spi_bus_handle_deinit(&furi_hal_spi_bus_handle_subghz);
+    furi_hal_spi_bus_handle_subghz.bus->initialized = false;
+    furi_hal_subghz_init();
+}
+
 void furi_hal_subghz_sleep(void) {
     if(furi_hal_subghz.state == FuriHalSubGhzStateInit) furi_hal_subghz_init();
 

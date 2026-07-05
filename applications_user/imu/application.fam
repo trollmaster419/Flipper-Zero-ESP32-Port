@@ -1,0 +1,13 @@
+App(
+    appid="imu",
+    name="IMU",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="imu_app",
+    requires=["gui"],
+    stack_size=4 * 1024,
+    fap_category="Tools",
+    fap_author="m5stick",
+    fap_description="M5StickC Plus2 internal IMU viewer (MPU6886 / SH200Q)",
+    fap_version="1.0",
+    sources=["*.c*"],
+)

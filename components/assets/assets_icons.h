@@ -5,6 +5,7 @@
 extern const Icon A_Levelup1_128x64;
 extern const Icon A_Levelup2_128x64;
 extern const Icon I_125_10px;
+extern const Icon I_pwnagotchi_10px;
 extern const Icon I_Apps_10px;
 extern const Icon I_Nfc_10px;
 extern const Icon I_back_10px;

@@ -10,6 +10,10 @@
 
 #define TAG "MomentumSettings"
 
+/* Defined in applications/services/cli/cli_uart.c. Idempotent: starts the
+ * UART0<->RPC bridge thread if it isn't already running. */
+extern void cli_uart_bridge_start(void);
+
 MomentumSettings momentum_settings = {
     .asset_pack = "",
     .anim_speed = 100,
@@ -53,6 +57,7 @@ MomentumSettings momentum_settings = {
     .rpc_color_bg = {{ScreenColorModeDefault, {255, 130, 0}}},
     .ir_tx_pin = IrTxPinG19,
     .nfc_pins = NfcPinsG26G25,
+    .qflipper_enabled = false,
 };
 
 typedef enum {
@@ -129,6 +134,7 @@ static const struct {
     {setting_uint(rpc_color_bg, 0x000000, 0xFFFFFF)},
     {setting_enum(ir_tx_pin, IrTxPinCount)},
     {setting_enum(nfc_pins, NfcPinsCount)},
+    {setting_bool(qflipper_enabled)},
 };
 
 static const GpioPin* spi_pins_mosi[] = {
@@ -239,7 +245,7 @@ void momentum_settings_load(void) {
     furi_record_close(RECORD_STORAGE);
 
     /* Save IR TX pin to NVS and apply immediately */
-    furi_hal_infrared_save_tx_output(
+    furi_hal_infrared_set_tx_output(
         momentum_settings.ir_tx_pin == IrTxPinG19 ? FuriHalInfraredTxPinInternal :
                                                      FuriHalInfraredTxPinExtPA7);
 
@@ -248,6 +254,25 @@ void momentum_settings_load(void) {
 
     /* Apply SPI pin config (Disabled/Bruce/Default/Extra) */
     momentum_settings_apply_spi_config();
+
+    /* Apply spoofed shell color — the Settings → Misc → Spoof menu stores it,
+     * but furi_hal_version_get_hw_color() needs to return it. */
+    if(momentum_settings.spoof_color != FuriHalVersionColorUnknown) {
+        furi_hal_version_set_hw_color(momentum_settings.spoof_color);
+    }
+
+    furi_log_set_console_muted(momentum_settings.qflipper_enabled);
+
+    /* Bring the qFlipper UART bridge up automatically when the setting is
+     * persisted on. Without this the bridge only ever starts from the app's
+     * toggle, so it silently stays dead after every reboot/reflash even though
+     * the saved state says ENABLED. cli_uart_bridge_start() is idempotent
+     * (no-ops if the thread already exists), so calling it on each load is
+     * safe. The bridge task blocks on furi_record_open(RECORD_RPC) until BtSrv
+     * has created the record, so start order doesn't matter. */
+    if(momentum_settings.qflipper_enabled) {
+        cli_uart_bridge_start();
+    }
 }
 
 void momentum_settings_save(void) {

@@ -2,9 +2,34 @@
 #include <furi_hal.h>
 #include <flipper.h>
 #include <applications.h>
+#include <flipper_application/elf/elf_file.h>
 
 #include <esp_log.h>
 #include <esp_rom_uart.h>
+#include <nvs.h>
+#include <nvs_flash.h>
+
+/* Early-readable mirror of the BLE on/off setting (the storage-backed BtSettings can't be read
+ * this early). bt_settings_save() writes this key. When BLE is OFF we reserve a large contiguous
+ * FAP code pool (BLE and a big pool can't coexist -- the pool starves BLE and freezes the GUI). */
+static bool app_main_ble_enabled(void) {
+    /* NVS isn't initialized this early yet (BLE start does it later); do it now. Safe to call
+     * again later -- nvs_flash_init() is idempotent. */
+    esp_err_t err = nvs_flash_init();
+    if(err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+
+    nvs_handle_t h;
+    uint8_t enabled = 1; /* default: BLE on -> no pool -> normal device */
+    if(nvs_open("fapcfg", NVS_READONLY, &h) == ESP_OK) {
+        uint8_t v;
+        if(nvs_get_u8(h, "ble_on", &v) == ESP_OK) enabled = v;
+        nvs_close(h);
+    }
+    return enabled != 0;
+}
 
 static const char* TAG = "Main";
 
@@ -108,6 +133,9 @@ static void log_registry_snapshot(void) {
 
 static void furi_log_esp_callback(const uint8_t* data, size_t size, void* context) {
     (void)context;
+    /* Stay silent while a host client owns the UART (qFlipper/CLI bridge), so the
+     * protobuf/CLI stream isn't corrupted. Logs remain available via `log`. */
+    if(furi_log_is_console_muted()) return;
     for(size_t i = 0; i < size; ++i) {
         esp_rom_output_putc((char)data[i]);
     }
@@ -126,9 +154,27 @@ void app_main(void) {
     };
     furi_log_add_handler(log_handler);
 
+    /* Reserve a contiguous internal-RAM pool for external FAP code NOW, before furi_hal_init/BLE
+     * and the services fragment D/IRAM. At runtime the largest free exec block collapses to ~31KB
+     * (pure IRAM), so without this, FAPs with >31KB .text (weather ~33KB, protopirate ~84KB) can't
+     * allocate. The pool and BLE can't coexist (a pool big enough to matter starves BLE and freezes
+     * the GUI), so we only reserve it when BLE is turned OFF. Toggle BLE off + reboot = big-FAP
+     * mode; BLE on = normal device + small FAPs only. (No-op off classic ESP32.) */
+    if(!app_main_ble_enabled()) {
+        /* 48KB is the proven-safe size: a bigger pool (84-96KB) leaves too little contiguous
+         * internal RAM and the Apps browser/loader can't allocate (can't even open Apps). So the
+         * effective .text ceiling in big-FAP mode is ~48KB -- enough for weather_station (33KB)
+         * etc., but NOT protopirate (84KB), which simply doesn't fit alongside a working system. */
+        ESP_LOGI(TAG, "BLE disabled -> big-FAP mode: reserving exec pool");
+        fap_exec_pool_init(48 * 1024);
+    } else {
+        ESP_LOGI(TAG, "BLE enabled -> normal mode: no exec pool (small FAPs only)");
+    }
+
     furi_hal_init_early();
     furi_hal_init();
     flipper_init();
+
     log_registry_snapshot();
 
     for(size_t i = 0; i < FLIPPER_SERVICES_COUNT; i++) {

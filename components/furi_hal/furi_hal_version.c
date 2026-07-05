@@ -5,6 +5,8 @@
 #include <stdint.h>
 
 #include <esp_mac.h>
+#include <nvs.h>
+#include <nvs_flash.h>
 
 /* -------------------------------------------------------------------------
  * eFuse-derived device identity
@@ -77,15 +79,34 @@ void furi_hal_version_init(void) {
     esp_efuse_mac_get_default(furi_hal_version.uid);
     memcpy(furi_hal_version.ble_mac, furi_hal_version.uid, sizeof(furi_hal_version.uid));
 
+    /* Buffer for NVS-fetched name (must live at function scope so the pointer
+     * survives until furi_hal_version_refresh_names consumes it below). */
+    char nvs_name[FURI_HAL_VERSION_ARRAY_NAME_LENGTH];
+
     /* Determine effective name:
      *   1. If a custom name was already loaded (e.g., from namechanger), use it.
-     *   2. Otherwise derive a stable name from the eFuse MAC. */
+     *   2. Check NVS for a persisted custom name (set by namespoof on a prior boot).
+     *   3. Otherwise derive a stable name from the eFuse MAC. */
     const char* custom = version_get_custom_name(NULL);
     const char* effective;
     if(custom && custom[0]) {
         effective = custom;
     } else {
-        effective = s_device_name_pool[derive_name_index(furi_hal_version.uid)];
+        /* NVS may already be initialised at this point (app_main.c does
+         * nvs_flash_init before furi_hal_init).  Read our persisted key. */
+        nvs_handle_t h;
+        size_t len = sizeof(nvs_name);
+        if(nvs_open("fapcfg", NVS_READONLY, &h) == ESP_OK) {
+            esp_err_t e = nvs_get_str(h, "device_name", nvs_name, &len);
+            nvs_close(h);
+            if(e == ESP_OK) {
+                effective = nvs_name;
+            } else {
+                effective = s_device_name_pool[derive_name_index(furi_hal_version.uid)];
+            }
+        } else {
+            effective = s_device_name_pool[derive_name_index(furi_hal_version.uid)];
+        }
     }
     furi_hal_version_refresh_names(effective);
 }
@@ -146,8 +167,15 @@ uint8_t furi_hal_version_get_hw_body(void) {
     return 0;
 }
 
+static FuriHalVersionColor g_spoofed_color = FuriHalVersionColorUnknown;
+
 FuriHalVersionColor furi_hal_version_get_hw_color(void) {
-    return FuriHalVersionColorUnknown;
+    return g_spoofed_color != FuriHalVersionColorUnknown ? g_spoofed_color :
+                                                           FuriHalVersionColorUnknown;
+}
+
+void furi_hal_version_set_hw_color(FuriHalVersionColor color) {
+    g_spoofed_color = color;
 }
 
 uint8_t furi_hal_version_get_hw_connect(void) {
@@ -197,6 +225,23 @@ void furi_hal_version_set_name(const char* name) {
     } else {
         const char* derived = s_device_name_pool[derive_name_index(furi_hal_version.uid)];
         furi_hal_version_refresh_names(derived);
+        /* Clear NVS when reverting to eFuse-derived */
+        nvs_handle_t h;
+        if(nvs_open("fapcfg", NVS_READWRITE, &h) == ESP_OK) {
+            nvs_erase_key(h, "device_name");
+            nvs_commit(h);
+            nvs_close(h);
+        }
+        return;
+    }
+
+    /* Persist to NVS so furi_hal_version_init() picks it up immediately on
+     * subsequent boots — no SD card dependency. */
+    nvs_handle_t h;
+    if(nvs_open("fapcfg", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, "device_name", furi_hal_version.name);
+        nvs_commit(h);
+        nvs_close(h);
     }
 }
 

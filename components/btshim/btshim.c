@@ -21,6 +21,7 @@
 #include <esp_bt_main.h>
 #include <esp_gap_ble_api.h>
 #include <ble_serial.h>
+#include <flipper_application/elf/elf_file.h>
 
 #define BT_RPC_EVENT_BUFF_SENT    (1UL << 0)
 #define BT_RPC_EVENT_DISCONNECTED (1UL << 1)
@@ -532,10 +533,32 @@ static void bt_handle_get_settings(Bt* bt, BtMessage* message) {
     *message->data.settings = bt->bt_settings;
 }
 
+static void bt_handle_stop_stack(Bt* bt);
+static void bt_handle_start_stack(Bt* bt);
+
 static void bt_handle_set_settings(Bt* bt, BtMessage* message) {
+    bool was_enabled = bt->bt_settings.enabled;
     bt->bt_settings = *message->data.csettings;
-    bt_apply_settings(bt);
-    bt_settings_save(&bt->bt_settings);
+
+    if(was_enabled && !bt->bt_settings.enabled) {
+        /* BLE turning OFF: fully tear down the BLE stack to free its RAM,
+         * then reserve the FAP exec pool so large FAPs can run without a
+         * reboot. */
+        FURI_LOG_I(TAG, "BLE off: stopping stack + allocating exec pool");
+        bt_handle_stop_stack(bt);
+        fap_exec_pool_init(48 * 1024);
+        bt_settings_save(&bt->bt_settings);
+    } else if(!was_enabled && bt->bt_settings.enabled) {
+        /* BLE turning ON: release the FAP pool back to heap, then bring up
+         * the full BLE stack (radio + profiles + advertising). */
+        FURI_LOG_I(TAG, "BLE on: releasing exec pool + starting stack");
+        fap_exec_pool_deinit();
+        bt_handle_start_stack(bt);
+        bt_settings_save(&bt->bt_settings);
+    } else {
+        bt_apply_settings(bt);
+        bt_settings_save(&bt->bt_settings);
+    }
 }
 
 static void bt_handle_reload_keys_settings(Bt* bt) {

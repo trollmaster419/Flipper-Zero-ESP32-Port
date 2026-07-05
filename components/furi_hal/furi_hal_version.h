@@ -62,6 +62,7 @@ uint8_t furi_hal_version_get_hw_version(void);
 uint8_t furi_hal_version_get_hw_target(void);
 uint8_t furi_hal_version_get_hw_body(void);
 FuriHalVersionColor furi_hal_version_get_hw_color(void);
+void furi_hal_version_set_hw_color(FuriHalVersionColor color);
 uint8_t furi_hal_version_get_hw_connect(void);
 FuriHalVersionRegion furi_hal_version_get_hw_region(void);
 const char* furi_hal_version_get_hw_region_name(void);
