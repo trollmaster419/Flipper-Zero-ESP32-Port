@@ -226,6 +226,48 @@ static void draw_face_big(Canvas* canvas, int x, int y, PwnagotchiMood m) {
         break;
     }
 }
+// Word-wrap `text` into a column [x, x+max_w) starting at baseline y,
+// drawing at most `max_lines` lines spaced `line_h` apart.
+static void draw_wrapped(
+    Canvas* canvas, int x, int y, int max_w, int line_h, int max_lines, const char* text) {
+    char line[40];
+    int line_len = 0;
+    int lines_drawn = 0;
+    const char* p = text;
+    while(*p && lines_drawn < max_lines) {
+        // grab next word (including a leading space)
+        const char* word = p;
+        while(*p == ' ') p++;
+        const char* wstart = p;
+        while(*p && *p != ' ') p++;
+        int wlen = p - word; // includes leading spaces
+        char candidate[40];
+        int clen = line_len + wlen;
+        if(clen >= (int)sizeof(candidate)) clen = sizeof(candidate) - 1;
+        memcpy(candidate, line, line_len);
+        memcpy(candidate + line_len, word, clen - line_len);
+        candidate[clen] = '\0';
+        if(line_len > 0 && canvas_string_width(canvas, candidate) > max_w) {
+            // flush current line, start new one with this word (no leading space)
+            line[line_len] = '\0';
+            canvas_draw_str(canvas, x, y + lines_drawn * line_h, line);
+            lines_drawn++;
+            line_len = 0;
+            int copy = wstart == word ? wlen : (int)(p - wstart);
+            if(copy >= (int)sizeof(line)) copy = sizeof(line) - 1;
+            memcpy(line, wstart, copy);
+            line_len = copy;
+        } else {
+            memcpy(line, candidate, clen);
+            line_len = clen;
+        }
+    }
+    if(line_len > 0 && lines_drawn < max_lines) {
+        line[line_len] = '\0';
+        canvas_draw_str(canvas, x, y + lines_drawn * line_h, line);
+    }
+}
+
 static void render_cb(Canvas* const canvas, void* ctx) {
     PwnagotchiState* s = ctx;
     if(furi_mutex_acquire(s->mutex, 200) != FuriStatusOk) return;
@@ -235,32 +277,58 @@ static void render_cb(Canvas* const canvas, void* ctx) {
     char buf[128];
 
     canvas_set_font(canvas, FontSecondary);
-    canvas_draw_str(canvas, 2, 7, g_config.version);
+
+    // ---- Top status bar: CH nn  APS n (nn)   BT -   UP hh:mm:ss ----
+    snprintf(buf, sizeof(buf), "CH %02d", s->current_channel);
+    canvas_draw_str(canvas, 2, 7, buf);
+    int x = 2 + canvas_string_width(canvas, buf) + 6;
+
+    snprintf(buf, sizeof(buf), "APS %d (%02d)", s->aps_now, s->aps_total);
+    canvas_draw_str(canvas, x, 7, buf);
+    int left_end = x + canvas_string_width(canvas, buf);
+
+    unsigned long up = s->uptime_secs;
+    snprintf(buf, sizeof(buf), "UP %02lu:%02lu:%02lu",
+             up / 3600UL, (up / 60UL) % 60UL, up % 60UL);
+    int up_w = canvas_string_width(canvas, buf);
+    canvas_draw_str(canvas, w - up_w - 2, 7, buf);
+    int right_start = w - up_w - 2;
+
+    // BT indicator only if it fits between the two groups
+    const char* bt = "BT -";
+    int bt_w = canvas_string_width(canvas, bt);
+    if(right_start - left_end > bt_w + 8) {
+        canvas_draw_str(canvas, (left_end + right_start - bt_w) / 2, 7, bt);
+    }
     canvas_draw_line(canvas, 0, 10, w, 10);
 
-    canvas_draw_str(canvas, 2, 21, "minigotchi>");
-    snprintf(buf, sizeof(buf), "%s", s->epoch_status);
-    canvas_draw_str(canvas, w - canvas_string_width(canvas, buf) - 2, 21, buf);
-
-    draw_face_big(canvas, 2, 28, s->mood);
-
+    // ---- Name (top-left) ----
+    snprintf(buf, sizeof(buf), "%s>", g_config.name);
+    canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str(canvas, 2, 22, buf);
     canvas_set_font(canvas, FontSecondary);
+
+    // ---- Face (lower-left) ----
+    draw_face_big(canvas, 2, 30, s->mood);
+
+    // ---- Speech text (right of the face) ----
     if(s->pwnagotchi_detected) {
-        snprintf(buf, sizeof(buf), "%s %s", s->peer_type, s->peer_name);
-        canvas_draw_str(canvas, 34, 39, buf);
+        snprintf(buf, sizeof(buf), "%s: %s", s->epoch_status, s->peer_name);
     } else if(s->ap_name[0]) {
-        snprintf(buf, sizeof(buf), "%.16s", s->ap_name);
-        canvas_draw_str(canvas, 34, 39, buf);
+        snprintf(buf, sizeof(buf), "%s (%.16s)", s->epoch_status, s->ap_name);
+    } else {
+        snprintf(buf, sizeof(buf), "%s", s->epoch_status);
     }
+    draw_wrapped(canvas, 34, 30, w - 34 - 2, 10, 3, buf);
 
     canvas_draw_line(canvas, 0, 53, w, 53);
 
-    snprintf(buf, sizeof(buf), "CH:%d  UP:%lus",
-             s->current_channel, (unsigned long)s->uptime_secs);
-    canvas_draw_str(canvas, 2, 63, buf);
-    snprintf(buf, sizeof(buf), "PWND:%lu/%lu",
+    // ---- Bottom bar: PWND n (nn)   ...   AUTO ----
+    snprintf(buf, sizeof(buf), "PWND %lu (%02lu)",
              (unsigned long)s->pwnd_run, (unsigned long)s->pwnd_tot);
-    canvas_draw_str(canvas, w - canvas_string_width(canvas, buf) - 2, 63, buf);
+    canvas_draw_str(canvas, 2, 63, buf);
+    const char* mode = "AUTO";
+    canvas_draw_str(canvas, w - canvas_string_width(canvas, mode) - 2, 63, mode);
     furi_mutex_release(s->mutex);
 }
 static void input_cb(InputEvent* ev, void* ctx) {
@@ -392,6 +460,7 @@ static void worker_task(void* param) {
                 uint8_t target_bssid[6];
                 deauth_get_target(target_essid, sizeof(target_essid), target_bssid);
                 furi_mutex_acquire(state->mutex, FuriWaitForever);
+                deauth_get_ap_counts(&state->aps_now, &state->aps_total);
                 state->mood = MoodCool;
                 strncpy(state->epoch_status, "pwnd!", sizeof(state->epoch_status) - 1);
                 strncpy(state->ap_name, target_essid, sizeof(state->ap_name) - 1);

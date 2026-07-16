@@ -67,7 +67,15 @@ void furi_hal_init(void) {
     furi_hal_usb_init();
     furi_hal_light_init();
     furi_hal_display_init();
+
+#if BOARD_HAS_AXP192 && BOARD_HAS_SPEAKER
+    /* Power the buzzer circuit via AXP192 LDOio (M5StickC Plus2 GPIO2).
+     * Without this the LEDC PWM has no effect — the AXP192 keeps the pin
+     * gate turned off.  Safe to call even if AXP192 init is pending (the
+     * axp192 driver handles an absent PMU gracefully). */
+    furi_hal_axp192_enable_ldoio(true);
+#endif
+
     furi_hal_speaker_init();
-    furi_hal_nfc_init();
     ESP_LOGI(TAG, "Init complete");
 }

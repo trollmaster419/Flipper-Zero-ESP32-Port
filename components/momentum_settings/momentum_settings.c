@@ -249,11 +249,23 @@ void momentum_settings_load(void) {
         momentum_settings.ir_tx_pin == IrTxPinG19 ? FuriHalInfraredTxPinInternal :
                                                      FuriHalInfraredTxPinExtPA7);
 
-    /* Save NFC pin config to NVS and de-init if disabled */
-    furi_hal_nfc_set_pins_config(momentum_settings.nfc_pins);
+    /* NFC + radio pin config. The Bruce CC1101 pinout shares GPIOs with the NFC
+     * bus, so when it's selected NFC must be disabled first or the radio can't
+     * probe. Doing this here (not only in loader_menu_app_alloc) means the radio
+     * comes up correctly regardless of entry point — e.g. jumping straight into
+     * the file browser and opening a .sub without first visiting the main menu. */
+    if(momentum_settings.spi_cc1101_handle == SpiBruce) {
+        furi_hal_nfc_set_pins_config(NfcPinsDisabled);
+    } else {
+        furi_hal_nfc_set_pins_config(momentum_settings.nfc_pins);
+    }
 
-    /* Apply SPI pin config (Disabled/Bruce/Default/Extra) */
+    /* Apply SPI pin config for both radios (subghz + nrf24 bus handles) */
     momentum_settings_apply_spi_config();
+
+    /* Full CC1101 (re)init with the selected pinout so subghz_devices_is_connect()
+     * succeeds without waiting for loader_menu to run it. Idempotent. */
+    furi_hal_subghz_set_spi_config(momentum_settings.spi_cc1101_handle);
 
     /* Apply spoofed shell color — the Settings → Misc → Spoof menu stores it,
      * but furi_hal_version_get_hw_color() needs to return it. */

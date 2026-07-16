@@ -11,6 +11,7 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <freertos/idf_additions.h> /* xTaskCreateWithCaps / vTaskDeleteWithCaps */
 
 #include <driver/rmt_tx.h>
 #include <driver/rmt_rx.h>
@@ -69,6 +70,7 @@ static struct {
     FuriHalInfraredTxSignalSentISRCallback signal_sent_callback;
     void* signal_sent_context;
     SemaphoreHandle_t done_semaphore;
+    TaskHandle_t task_handle;
     uint32_t carrier_freq;
     float duty_cycle;
 } ir_tx;
@@ -275,6 +277,9 @@ void furi_hal_infrared_async_rx_set_timeout_isr_callback(
 
 static void ir_tx_task(void* arg) {
     (void)arg;
+    /* Capture our own handle now: the stack+TCB were allocated via
+     * xTaskCreateWithCaps and must be released with vTaskDeleteWithCaps. */
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
 
     rmt_symbol_word_t* symbols =
         heap_caps_malloc(IR_TX_MAX_SYMBOLS * sizeof(rmt_symbol_word_t), MALLOC_CAP_8BIT);
@@ -370,7 +375,9 @@ static void ir_tx_task(void* arg) {
         xSemaphoreGive(ir_tx.done_semaphore);
     }
 
-    vTaskDelete(NULL);
+    /* Frees the PSRAM stack + TCB allocated by xTaskCreateWithCaps (deferred to
+     * the idle task for a self-deleting task). */
+    vTaskDeleteWithCaps(self);
 }
 
 void furi_hal_infrared_async_tx_start(uint32_t freq, float duty_cycle) {
@@ -422,8 +429,34 @@ void furi_hal_infrared_async_tx_start(uint32_t freq, float duty_cycle) {
 
     ir_state = InfraredStateAsyncTx;
 
-    /* Start TX task */
-    xTaskCreate(ir_tx_task, "ir_tx", 4096, NULL, 15, NULL);
+    /* Start the TX pump task. Its stack goes in PSRAM, not the scarce internal
+     * DRAM pool: this task only reads RAM buffers and drives the RMT driver, it
+     * never runs with the flash cache disabled, so an external stack is safe
+     * (CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y). Previously a plain
+     * xTaskCreate() demanded 4 KB of internal DRAM; when that pool was exhausted
+     * the create failed silently (rc unchecked) and the caller hung forever in
+     * async_tx_wait_termination() waiting for a semaphore no task would give. */
+    ir_tx.task_handle = NULL;
+    BaseType_t tc = xTaskCreateWithCaps(
+        ir_tx_task, "ir_tx", 4096, NULL, 15, &ir_tx.task_handle,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
+    if(tc != pdPASS || ir_tx.task_handle == NULL) {
+        /* Fall back to internal DRAM if PSRAM is unavailable for some reason. */
+        tc = xTaskCreateWithCaps(
+            ir_tx_task, "ir_tx", 4096, NULL, 15, &ir_tx.task_handle,
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+
+    if(tc != pdPASS || ir_tx.task_handle == NULL) {
+        /* Could not create the pump task. Do NOT leave the caller hanging in
+         * wait_termination(): move to the Stopped state and release the
+         * semaphore so it returns and tears the channel down normally. The
+         * transmit is dropped, but the UI stays responsive. */
+        FURI_LOG_E("IR", "async_tx: failed to create pump task, dropping signal");
+        ir_state = InfraredStateAsyncTxStopped;
+        xSemaphoreGive(ir_tx.done_semaphore);
+    }
 }
 
 void furi_hal_infrared_async_tx_wait_termination(void) {

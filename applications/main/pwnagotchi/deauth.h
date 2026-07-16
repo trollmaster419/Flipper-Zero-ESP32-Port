@@ -13,4 +13,5 @@ void deauth_collect_stop(void);
 bool deauth_is_collecting(void);
 void deauth_report_mac(const uint8_t* mac);
 int deauth_get_client_count(void);
+void deauth_get_ap_counts(int* now, int* total);
 const uint8_t* deauth_get_client_mac(int index);

@@ -74,6 +74,12 @@ void furi_hal_subghz_stop_async_tx(void);
 void furi_hal_subghz_set_ext_leds_and_amp(bool enabled);
 bool furi_hal_subghz_get_ext_leds_and_amp(void);
 
+/** Get the pre-allocated internal-DRAM stack buffer for the SubGhz file encoder
+ * worker thread. Returns NULL if pre-allocation failed. The buffer is a persistent
+ * singleton (borrowed, not transferred) — the caller must NOT free it and may reuse
+ * it across successive worker instances. */
+void* furi_hal_subghz_get_worker_stack(void);
+
 #ifdef __cplusplus
 }
 #endif

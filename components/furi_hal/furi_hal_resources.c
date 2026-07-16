@@ -75,4 +75,8 @@ const GpioPin gpio_spi_bruce_gdo0 = {.port = NULL, .pin = BOARD_PIN_SPI_BRUCE_GD
 /* Sentinel — always unmapped, used for Disabled pin configs */
 const GpioPin gpio_null = {.port = NULL, .pin = UINT16_MAX};
 const GpioPin gpio_ibutton  = {.port = NULL, .pin = UINT16_MAX};
+#ifdef BOARD_PIN_BUZZER
+const GpioPin gpio_speaker  = {.port = NULL, .pin = BOARD_PIN_BUZZER};
+#else
 const GpioPin gpio_speaker  = {.port = NULL, .pin = UINT16_MAX};
+#endif

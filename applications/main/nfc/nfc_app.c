@@ -222,6 +222,9 @@ void nfc_app_free(NfcApp* instance) {
     furi_string_free(instance->file_path);
     furi_string_free(instance->file_name);
 
+    /* Release NFC HAL pins so they can be reused (e.g. CC1101 CSN/GDO0) */
+    furi_hal_nfc_deinit();
+
     free(instance);
 }
 
@@ -512,6 +515,10 @@ void nfc_app_run_external(NfcApp* nfc, const char* app_path) {
 }
 
 int32_t nfc_app(void* p) {
+    /* Initialize NFC HAL on first app launch instead of at boot, so the I2C pins
+     * (GPIO 25/26 for PN532) don't conflict with the external CC1101 module's
+     * CSN/GDO0 pins when SubGHz is used directly from the file browser. */
+    furi_hal_nfc_init();
     if(!nfc_is_hal_ready()) return 0;
 
     NfcApp* nfc = nfc_app_alloc();

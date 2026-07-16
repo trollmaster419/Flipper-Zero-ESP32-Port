@@ -76,7 +76,10 @@ static void handle_button(FuriPubSub* pubsub, uint32_t* seq, ButtonState* btn, g
 
             if(long_key != key) {
                 event_publish(pubsub, seq, key, InputTypeRelease);
+                /* Press before Short — the view dispatcher discards
+                 * non-complementary events (Short with no preceding Press). */
                 event_publish(pubsub, seq, long_key, InputTypePress);
+                event_publish(pubsub, seq, long_key, InputTypeShort);
             }
 
             event_publish(pubsub, seq, long_key, InputTypeLong);

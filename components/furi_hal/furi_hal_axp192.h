@@ -55,6 +55,16 @@ uint16_t furi_hal_axp192_get_charge_current_ma(void);
  */
 uint16_t furi_hal_axp192_get_discharge_current_ma(void);
 
+/**
+ * Enable or disable the AXP192 LDOio output (register 0x92, bit 2).
+ *
+ * On M5StickC Plus2, LDOio powers the GPIO2 buzzer circuit. Must be
+ * enabled before the buzzer can produce sound.
+ *
+ * @param enable  true to power the buzzer, false to shut it off.
+ */
+void furi_hal_axp192_enable_ldoio(bool enable);
+
 #ifdef __cplusplus
 }
 #endif

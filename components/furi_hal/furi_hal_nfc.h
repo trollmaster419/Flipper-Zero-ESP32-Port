@@ -104,6 +104,13 @@ typedef enum {
 FuriHalNfcError furi_hal_nfc_init(void);
 
 /**
+ * @brief De-initialize the NFC HAL, releasing I2C pins so they can be reused.
+ *
+ * Safe to call when NFC was never initialized (returns immediately).
+ */
+void furi_hal_nfc_deinit(void);
+
+/**
  * @brief Check whether the NFC HAL was properly initialised and is ready.
  *
  * @returns FuriHalNfcErrorNone if ready, any other error code if not ready.

@@ -219,6 +219,23 @@ void furi_thread_set_appid(FuriThread* thread, const char* appid);
 void furi_thread_set_stack_size(FuriThread* thread, size_t stack_size);
 
 /**
+ * @brief Assign an externally-allocated stack buffer to a FuriThread instance.
+ *
+ * The thread MUST be stopped when calling this function, and the buffer must
+ * remain valid for the lifetime of the thread.  Ownership stays with the caller:
+ * the buffer is NEVER freed by the thread (not on furi_thread_free, nor when this
+ * function is called again), so it can be reused across multiple thread instances.
+ * This is intended for cases where the caller has pre-allocated a buffer from a
+ * specific memory region (e.g. internal DRAM on ESP32) and wants the thread
+ * to use that buffer instead of relying on the default allocation strategy.
+ *
+ * @param[in,out] thread pointer to the FuriThread instance to be modified
+ * @param[in] buffer     pointer to a stack buffer of at least `stack_size` bytes
+ * @param[in] stack_size stack size in bytes
+ */
+void furi_thread_set_stack_buffer(FuriThread* thread, void* buffer, size_t stack_size);
+
+/**
  * @brief Set the user callback function to be executed in a FuriThread.
  *
  * The thread MUST be stopped when calling this function.

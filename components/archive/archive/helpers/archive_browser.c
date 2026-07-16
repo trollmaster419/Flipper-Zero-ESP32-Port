@@ -304,8 +304,14 @@ ArchiveFile_t* archive_get_current_file(ArchiveBrowserView* browser) {
         browser->view,
         ArchiveBrowserViewModel * model,
         {
-            selected = files_array_size(model->files) ?
-                           files_array_get(model->files, model->item_idx - model->array_offset) :
+            /* item_idx/array_offset can point past the array after the file list
+             * is reloaded (e.g. returning to the browser from another app), and
+             * the subtraction can underflow. Bounds-check the computed index
+             * instead of only checking that the list is non-empty. */
+            size_t size = files_array_size(model->files);
+            int32_t idx = (int32_t)model->item_idx - (int32_t)model->array_offset;
+            selected = (size > 0 && idx >= 0 && (size_t)idx < size) ?
+                           files_array_get(model->files, idx) :
                            NULL;
         },
         false);

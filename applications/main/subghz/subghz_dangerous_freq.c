@@ -8,7 +8,7 @@
 #include <subghz/subghz_last_settings.h>
 
 void subghz_dangerous_freq() {
-    bool is_extended_i = false;
+    bool is_extended_i = true;
 
     Storage* storage = furi_record_open(RECORD_STORAGE);
     FlipperFormat* fff_data_file = flipper_format_file_alloc(storage);

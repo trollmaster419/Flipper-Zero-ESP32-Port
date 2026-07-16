@@ -26,6 +26,7 @@ typedef struct {
     bool delete_old_signals;
     float hopping_threshold;
     bool leds_and_amp;
+    bool audio_enabled;
     uint8_t tx_power;
     int32_t frequency_offset; // Hz, crystal calibration offset
 } SubGhzLastSettings;

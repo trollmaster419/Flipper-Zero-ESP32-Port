@@ -31,6 +31,8 @@ typedef struct {
 static TargetAP s_target_queue[MAX_TARGETS];
 static int s_target_count = 0;
 static int s_target_idx = 0;
+static int s_last_scan_aps = 0;
+static int s_total_aps_seen = 0;
 static uint8_t s_collect_bssid[6];
 static bool s_collecting = false;
 static uint8_t s_clients[DEAUTH_MAX_CLIENTS][6];
@@ -64,6 +66,10 @@ void deauth_report_mac(const uint8_t* mac) {
 }
 int deauth_get_client_count(void) {
     return s_client_count;
+}
+void deauth_get_ap_counts(int* now, int* total) {
+    if (now) *now = s_last_scan_aps;
+    if (total) *total = s_total_aps_seen;
 }
 const uint8_t* deauth_get_client_mac(int index) {
     if (index < 0 || index >= s_client_count) return NULL;
@@ -118,6 +124,8 @@ bool deauth_select(void) {
     wifi_ap_record_t* records = NULL;
     uint16_t count = 0;
     wlan_hal_scan(&records, &count, 50);
+    s_last_scan_aps = count;
+    if (count > s_total_aps_seen) s_total_aps_seen = count;
     if (count > 0) {
         int indices[count];
         for (int i = 0; i < count; i++) indices[i] = i;

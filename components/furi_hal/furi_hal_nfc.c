@@ -1941,35 +1941,39 @@ void furi_hal_nfc_set_pins_config(uint8_t config) {
     if(config == 2 && nfc_hal_ready) {
         /* De-init NFC immediately (setting to disabled) */
         FURI_LOG_I(TAG, "NFC HAL: de-initializing (set to disabled)");
-        nfc_hal_ready = false;
-        if(nfc_mutex) {
-            furi_mutex_free(nfc_mutex);
-            nfc_mutex = NULL;
-        }
-        if(nfc_event_flags) {
-            furi_event_flag_free(nfc_event_flags);
-            nfc_event_flags = NULL;
-        }
-        if(fwt_timer) {
-            esp_timer_delete(fwt_timer);
-            fwt_timer = NULL;
-        }
-        if(block_tx_timer) {
-            esp_timer_delete(block_tx_timer);
-            block_tx_timer = NULL;
-        }
-        esp_err_t del_err = i2c_driver_delete(BOARD_NFC_I2C_PORT);
-        if(del_err == ESP_OK) {
-            FURI_LOG_I(TAG, "I2C bus %d deleted (NFC disabled at runtime)", BOARD_NFC_I2C_PORT);
-            gpio_reset_pin(BOARD_PIN_NFC_SDA);
-            gpio_reset_pin(BOARD_PIN_NFC_SCL);
-        }
+        furi_hal_nfc_deinit();
     } else if(config != 2 && nfc_hal_ready) {
         /* Re-init I2C with new pins so the change takes effect immediately */
         FURI_LOG_I(TAG, "NFC HAL: re-initializing I2C (pins config changed to %u)", config);
         pn532_i2c_init();
         uint8_t sam_cmd[] = {PN532_CMD_SAMCONFIGURATION, 0x01, 0x14, 0x01};
         pn532_send_command(sam_cmd, sizeof(sam_cmd), NULL, NULL, 1000);
+    }
+}
+
+void furi_hal_nfc_deinit(void) {
+    if(!nfc_hal_ready) return;
+    nfc_hal_ready = false;
+    if(nfc_mutex) {
+        furi_mutex_free(nfc_mutex);
+        nfc_mutex = NULL;
+    }
+    if(nfc_event_flags) {
+        furi_event_flag_free(nfc_event_flags);
+        nfc_event_flags = NULL;
+    }
+    if(fwt_timer) {
+        esp_timer_delete(fwt_timer);
+        fwt_timer = NULL;
+    }
+    if(block_tx_timer) {
+        esp_timer_delete(block_tx_timer);
+        block_tx_timer = NULL;
+    }
+    esp_err_t del_err = i2c_driver_delete(BOARD_NFC_I2C_PORT);
+    if(del_err == ESP_OK) {
+        gpio_reset_pin(BOARD_PIN_NFC_SDA);
+        gpio_reset_pin(BOARD_PIN_NFC_SCL);
     }
 }
 
@@ -1981,6 +1985,8 @@ FuriHalNfcError furi_hal_nfc_init(void) {
     FURI_LOG_I(TAG, "NFC HAL: no NFC hardware on this board");
     return FuriHalNfcErrorNone;
 }
+
+void furi_hal_nfc_deinit(void) {}
 
 FuriHalNfcError furi_hal_nfc_is_hal_ready(void) { return FuriHalNfcErrorCommunication; }
 FuriHalNfcError furi_hal_nfc_acquire(void) { return FuriHalNfcErrorCommunication; }

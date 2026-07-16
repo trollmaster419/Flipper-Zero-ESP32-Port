@@ -182,14 +182,9 @@ static LoaderMenuApp* loader_menu_app_alloc(LoaderMenu* loader_menu) {
 
     momentum_settings_load();
     menu_set_style(app->primary_menu, momentum_settings.menu_style);
-    /* Apply persisted external-radio pinout so a plugged-in CC1101 works without
-     * having to re-toggle the setting after every boot. The Bruce pins overlap
-     * the NFC bus, so disable NFC first (it resets those pins) when the radio is
-     * on, then point the SPI bus at them. */
-    if(momentum_settings.spi_cc1101_handle == SpiBruce) {
-        furi_hal_nfc_set_pins_config(NfcPinsDisabled);
-    }
-    furi_hal_subghz_set_spi_config(momentum_settings.spi_cc1101_handle);
+    /* External-radio pinout (CC1101/Bruce NFC-pin overlap) is now applied inside
+     * momentum_settings_load() above, so it takes effect at boot regardless of
+     * entry point — no need to repeat it here. */
 
     loader_menu_build_menu(app, loader_menu);
     loader_menu_build_submenu(app, loader_menu);

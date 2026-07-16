@@ -2,6 +2,7 @@
 #include "../views/subghz_read_raw.h"
 #include "../helpers/subghz_usb_export.h"
 #include <dolphin/dolphin.h>
+#include <furi_hal.h>
 #include <lib/subghz/protocols/raw.h>
 #include <lib/subghz/blocks/generic.h>
 #include <toolbox/path.h>
@@ -147,6 +148,11 @@ bool subghz_scene_read_raw_on_event(void* context, SceneManagerEvent event) {
         switch(event.event) {
         case SubGhzCustomEventViewReadRAWBack:
 
+            /* Stop buzzer audio before stopping the radio */
+            if(furi_hal_speaker_is_mine()) {
+                furi_hal_speaker_release();
+            }
+
             subghz_txrx_stop(subghz->txrx);
             //Stop save file
             subghz_protocol_raw_save_to_file_stop(decoder_raw);
@@ -272,6 +278,10 @@ bool subghz_scene_read_raw_on_event(void* context, SceneManagerEvent event) {
             break;
 
         case SubGhzCustomEventViewReadRAWIDLE:
+            /* Stop buzzer audio before stopping the radio (GDO0 goes idle) */
+            if(furi_hal_speaker_is_mine()) {
+                furi_hal_speaker_release();
+            }
             subghz_txrx_stop(subghz->txrx);
             size_t spl_count = subghz_protocol_raw_get_sample_write(decoder_raw);
 
@@ -326,6 +336,14 @@ bool subghz_scene_read_raw_on_event(void* context, SceneManagerEvent event) {
                     }
                     dolphin_deed(DolphinDeedSubGhzRawRec);
                     subghz_txrx_rx_start(subghz->txrx);
+
+                    /* Start demodulated audio on buzzer if available and enabled */
+                    if(subghz->last_settings->audio_enabled &&
+                       furi_hal_speaker_acquire(100)) {
+                        furi_hal_speaker_start_gdo_mirror(
+                            furi_hal_subghz_get_data_gpio(), 0.5f);
+                    }
+
                     subghz->state_notifications = SubGhzNotificationStateRx;
                     subghz_rx_key_state_set(subghz, SubGhzRxKeyStateAddKey);
                 } else {
@@ -368,6 +386,11 @@ bool subghz_scene_read_raw_on_event(void* context, SceneManagerEvent event) {
             subghz_read_raw_add_data_rssi(
                 subghz->subghz_read_raw, ret_rssi.rssi, ret_rssi.is_above);
             subghz_protocol_raw_save_to_file_pause(decoder_raw, !ret_rssi.is_above);
+
+            /* Squelch audio below RSSI threshold */
+            if(subghz->last_settings->audio_enabled) {
+                furi_hal_speaker_gdo_set_mute(!ret_rssi.is_above);
+            }
             break;
         case SubGhzNotificationStateTx:
             notification_message(subghz->notifications, &sequence_blink_magenta_10);
@@ -384,6 +407,10 @@ void subghz_scene_read_raw_on_exit(void* context) {
     SubGhz* subghz = context;
 
     //Stop CC1101
+    /* Stop buzzer audio before stopping the radio */
+    if(furi_hal_speaker_is_mine()) {
+        furi_hal_speaker_release();
+    }
     subghz_txrx_stop(subghz->txrx);
     subghz->state_notifications = SubGhzNotificationStateIDLE;
     notification_message(subghz->notifications, &sequence_reset_rgb);

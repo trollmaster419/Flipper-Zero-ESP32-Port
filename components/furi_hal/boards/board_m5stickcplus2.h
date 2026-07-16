@@ -57,12 +57,12 @@
 
 #define BOARD_PIN_BUZZER        2
 
-/* CC1101 / SubGHz pins (not present, but resources.c references unconditionally) */
-#define BOARD_PIN_CC1101_SCK    -1
-#define BOARD_PIN_CC1101_CSN    -1
-#define BOARD_PIN_CC1101_MISO   -1
-#define BOARD_PIN_CC1101_MOSI   -1
-#define BOARD_PIN_CC1101_GDO0   -1
+/* CC1101 / SubGHz pins (external module on Bruce pinout) */
+#define BOARD_PIN_CC1101_SCK    0   /* SCK   = SPI_BRUCE_SCK */
+#define BOARD_PIN_CC1101_CSN    26  /* CSN   = SPI_BRUCE_CS */
+#define BOARD_PIN_CC1101_MISO   33  /* MISO  = SPI_BRUCE_MISO */
+#define BOARD_PIN_CC1101_MOSI   32  /* MOSI  = SPI_BRUCE_MOSI */
+#define BOARD_PIN_CC1101_GDO0   25  /* GDO0  = SPI_BRUCE_GDO0 */
 
 /* nRF24 pin (not present, but nrf24_hw.c references unconditionally) */
 #define BOARD_PIN_NRF24_CE      -1
@@ -84,7 +84,7 @@
 #define BOARD_HAS_IMU           1
 #define BOARD_HAS_RGB_LED       0
 #define BOARD_HAS_VIBRO         0
-#define BOARD_HAS_SPEAKER       0
+#define BOARD_HAS_SPEAKER       1
 #define BOARD_HAS_IR            1
 #define BOARD_HAS_IBUTTON       0
 #define BOARD_HAS_RFID          0
@@ -94,7 +94,7 @@
 #define BOARD_PIN_NFC_IRQ       -1
 #define BOARD_PIN_NFC_RST       -1
 #define BOARD_NFC_I2C_PORT      I2C_NUM_0
-#define BOARD_HAS_SUBGHZ        0
+#define BOARD_HAS_SUBGHZ        1
 #define BOARD_HAS_USB           1
 
 #define BOARD_HAS_AXP192        1

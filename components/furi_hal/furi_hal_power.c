@@ -32,7 +32,13 @@
 #define FURI_HAL_POWER_LOW_BATTERY_THRESHOLD_V  (3.35f)
 #define FURI_HAL_POWER_EMPTY_BATTERY_VOLTAGE_V  (3.27f)
 #define FURI_HAL_POWER_FULL_BATTERY_VOLTAGE_V   (4.20f)
-#define FURI_HAL_POWER_ADC_DIVIDER_RATIO        (3.0f)
+/* ADC voltage divider ratio — board header can override via BOARD_BATTERY_ADC_RATIO.
+ * M5StickC Plus2: 2.0f (battery→2:1 divider→GPIO38). Default 3.0f for boards that
+ * don't specify (T-Embed, Waveshare C6). */
+#ifndef BOARD_BATTERY_ADC_RATIO
+#define BOARD_BATTERY_ADC_RATIO 3.0f
+#endif
+#define FURI_HAL_POWER_ADC_DIVIDER_RATIO        (BOARD_BATTERY_ADC_RATIO)
 #define FURI_HAL_POWER_SAMPLE_REFRESH_US        (250000LL)
 #define FURI_HAL_POWER_CHARGE_LIMIT_MIN_V       (3.840f)
 #define FURI_HAL_POWER_CHARGE_LIMIT_MAX_V       (4.208f)
@@ -167,45 +173,52 @@ static void furi_hal_power_ensure_initialized(void) {
     furi_hal_power.charge_voltage_limit =
         furi_hal_power_quantize_charge_limit(FURI_HAL_POWER_FULL_BATTERY_VOLTAGE_V);
 
+    /* ── Step 1: map GPIO to ADC unit/channel ────────────────────────── */
     adc_unit_t adc_unit = ADC_UNIT_1;
     adc_channel_t adc_channel = ADC_CHANNEL_0;
-    const esp_err_t map_result =
-        adc_oneshot_io_to_channel(gpio_battery_sense.pin, &adc_unit, &adc_channel);
-    if(map_result != ESP_OK) {
-        ESP_LOGW(TAG, "Unable to map BAT_ADC GPIO%u: %s", gpio_battery_sense.pin, esp_err_to_name(map_result));
+    esp_err_t result = adc_oneshot_io_to_channel(gpio_battery_sense.pin, &adc_unit, &adc_channel);
+    if(result != ESP_OK) {
+        ESP_LOGW(TAG, "BAT_ADC: GPIO%u → %s (no ADC available)",
+                 gpio_battery_sense.pin, esp_err_to_name(result));
         return;
     }
+    furi_hal_power.adc_unit = adc_unit;
+    furi_hal_power.adc_channel = adc_channel;
 
+    /* ── Step 2: create oneshot unit ─────────────────────────────────── */
     const adc_oneshot_unit_init_cfg_t init_config = {
         .unit_id = adc_unit,
         .ulp_mode = ADC_ULP_MODE_DISABLE,
     };
-
-    const esp_err_t unit_result =
-        adc_oneshot_new_unit(&init_config, &furi_hal_power.adc_handle);
-    if(unit_result != ESP_OK) {
-        ESP_LOGW(TAG, "Unable to initialize ADC unit: %s", esp_err_to_name(unit_result));
+    result = adc_oneshot_new_unit(&init_config, &furi_hal_power.adc_handle);
+    if(result != ESP_OK) {
+        ESP_LOGW(TAG, "BAT_ADC: adc_oneshot_new_unit → %s", esp_err_to_name(result));
         return;
     }
 
+    /* ── Step 3: configure the ADC channel ───────────────────────────── */
     const adc_oneshot_chan_cfg_t channel_config = {
         .atten = ADC_ATTEN_DB_12,
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
-
-    const esp_err_t channel_result =
-        adc_oneshot_config_channel(furi_hal_power.adc_handle, adc_channel, &channel_config);
-    if(channel_result != ESP_OK) {
-        ESP_LOGW(TAG, "Unable to configure BAT_ADC channel: %s", esp_err_to_name(channel_result));
+    result = adc_oneshot_config_channel(furi_hal_power.adc_handle, adc_channel, &channel_config);
+    if(result != ESP_OK) {
+        ESP_LOGW(TAG, "BAT_ADC: adc_oneshot_config_channel(ch%d) → %s",
+                 (unsigned)adc_channel, esp_err_to_name(result));
+        adc_oneshot_del_unit(furi_hal_power.adc_handle);
+        furi_hal_power.adc_handle = NULL;
         return;
     }
 
-    furi_hal_power.adc_unit = adc_unit;
-    furi_hal_power.adc_channel = adc_channel;
+    /* ── Step 4: calibration ─────────────────────────────────────────── */
     furi_hal_power.adc_ready = true;
     furi_hal_power.adc_cali_ready = furi_hal_power_adc_calibration_init(
         adc_unit, adc_channel, channel_config.atten, &furi_hal_power.adc_cali_handle);
     furi_hal_power.initialized = true;
+    ESP_LOGI(TAG, "BAT_ADC: ADC%u ch%d (cali=%s, ratio=%.1f)",
+             (unsigned)adc_unit + 1, (unsigned)adc_channel,
+             furi_hal_power.adc_cali_ready ? "yes" : "no",
+             (double)FURI_HAL_POWER_ADC_DIVIDER_RATIO);
 }
 
 static bool furi_hal_power_is_usb_present(void) {
@@ -238,6 +251,8 @@ static void furi_hal_power_refresh_sample(void) {
             return;
         }
     } else {
+        /* Approximate: 12-bit ADC, 0-3300 mV range with DB_12 attenuation
+         * (0-2450 mV mapped to 0-4095 on ESP32 when DB_12 is set). */
         pin_mv = (raw_value * 3300) / 4095;
     }
 
@@ -327,7 +342,13 @@ void furi_hal_power_init(void) {
 
 bool furi_hal_power_gauge_is_ok(void) {
     if(furi_hal_bq27220_is_present()) return true;
-    if(!furi_hal_power.adc_handle) return true;
+    if(furi_hal_axp192_is_present()) return true;
+    if(!furi_hal_power.adc_ready) {
+        /* No power IC and no ADC — no way to measure battery. Previously
+         * returned true (assuming USB powered), which made the UI show
+         * a fake "100%" forever. Now we're honest. */
+        return false;
+    }
     furi_hal_power_refresh_sample();
     return furi_hal_power.last_sample_ok;
 }
@@ -378,8 +399,9 @@ uint8_t furi_hal_power_get_pct(void) {
         }
         return furi_hal_power_voltage_to_pct(mv / 1000.0f);
     }
-    if(!furi_hal_power.adc_handle) {
-        return 100; /* No ADC, no fuel gauge → USB powered */
+    /* No power IC — use the ESP32 ADC if it was successfully initialized */
+    if(!furi_hal_power.adc_ready) {
+        return 50; /* Truly no measurement available — return mid-range */
     }
     const float battery_voltage = furi_hal_power_get_estimated_battery_voltage();
     if(battery_voltage <= 0.0f) {

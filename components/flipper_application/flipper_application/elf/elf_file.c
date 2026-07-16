@@ -666,6 +666,13 @@ typedef enum {
 static bool elf_load_debug_link(ELFFile* elf, Elf32_Shdr* section_header) {
     elf->debug_link_info.debug_link_size = section_header->sh_size;
     elf->debug_link_info.debug_link = malloc(section_header->sh_size);
+    if(!elf->debug_link_info.debug_link) {
+        /* OOM (or a corrupt/oversized sh_size): don't storage_file_read into NULL. */
+        elf->debug_link_info.debug_link_size = 0;
+        FURI_LOG_E(
+            TAG, "Failed to alloc %u bytes for .gnu_debuglink", (unsigned)section_header->sh_size);
+        return false;
+    }
 
     return storage_file_seek(elf->fd, section_header->sh_offset, true) &&
            storage_file_read(elf->fd, elf->debug_link_info.debug_link, section_header->sh_size) ==
@@ -770,9 +777,7 @@ static ELFLoadSectionResult
     section->data = aligned_malloc(section_header->sh_size, section_header->sh_addralign);
 #endif
 
-#if defined(CONFIG_IDF_TARGET_ESP32)
 section_allocated:
-#endif
     if(!section->data) {
         FURI_LOG_E(TAG, "    Failed to allocate %lu bytes for section",
             (unsigned long)section_header->sh_size);
@@ -1369,6 +1374,12 @@ void elf_file_init_debug_info(ELFFile* elf, ELFDebugInfo* debug_info) {
     // init mmap
     debug_info->mmap_entry_count = ELFSectionDict_size(elf->sections);
     debug_info->mmap_entries = malloc(sizeof(ELFMemoryMapEntry) * debug_info->mmap_entry_count);
+    if(!debug_info->mmap_entries) {
+        /* Non-fatal: the memory map is only used by the crash/debug resolver.
+         * Skip it rather than dereferencing NULL in the loop below. */
+        debug_info->mmap_entry_count = 0;
+        return;
+    }
     uint32_t mmap_entry_idx = 0;
 
     ELFSectionDict_it_t it;

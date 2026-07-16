@@ -60,4 +60,6 @@ typedef struct {
     int epochs_total;
     int handshakes_this_session;
     int missed_deauths;
+    int aps_now;
+    int aps_total;
 } PwnagotchiState;

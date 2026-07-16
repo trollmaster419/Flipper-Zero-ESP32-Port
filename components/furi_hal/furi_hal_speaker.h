@@ -79,6 +79,15 @@ void furi_hal_speaker_stop(void);
  */
 void furi_hal_speaker_start_gdo_mirror(const GpioPin* gdo_pin, float volume);
 
+/** Mute/unmute GDO mirror output (RSSI squelch).
+ *
+ * When muted, the GDO mirror thread keeps running but outputs silence.
+ * Unmuting resumes audio without thread restart overhead.
+ *
+ * @param      mute    true to mute, false to unmute
+ */
+void furi_hal_speaker_gdo_set_mute(bool mute);
+
 #ifdef __cplusplus
 }
 #endif

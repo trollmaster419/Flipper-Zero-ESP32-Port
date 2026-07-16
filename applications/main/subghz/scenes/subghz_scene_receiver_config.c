@@ -18,6 +18,7 @@ enum SubGhzSettingIndex {
     SubGhzSettingIndexLock,
     SubGhzSettingIndexRAWThresholdRSSI,
     SubGhzSettingIndexExportToUSB,
+    SubGhzSettingIndexAudio,
 };
 
 #define RAW_THRESHOLD_RSSI_COUNT 11
@@ -288,6 +289,14 @@ static void subghz_scene_receiver_config_set_export_to_usb(VariableItem* item) {
 
     variable_item_set_current_value_text(item, combobox_text[index]);
     subghz->export_to_usb = (index == 1);
+}
+
+static void subghz_scene_receiver_config_set_audio(VariableItem* item) {
+    SubGhz* subghz = variable_item_get_context(item);
+    uint8_t index = variable_item_get_current_value_index(item);
+
+    variable_item_set_current_value_text(item, combobox_text[index]);
+    subghz->last_settings->audio_enabled = (index == 1);
 }
 
 static void subghz_scene_receiver_config_set_raw_threshold_rssi(VariableItem* item) {
@@ -564,6 +573,16 @@ void subghz_scene_receiver_config_on_enter(void* context) {
             subghz_scene_receiver_config_set_export_to_usb,
             subghz);
         value_index = subghz->export_to_usb ? 1 : 0;
+        variable_item_set_current_value_index(item, value_index);
+        variable_item_set_current_value_text(item, combobox_text[value_index]);
+
+        item = variable_item_list_add(
+            subghz->variable_item_list,
+            "Audio",
+            COMBO_BOX_COUNT,
+            subghz_scene_receiver_config_set_audio,
+            subghz);
+        value_index = subghz->last_settings->audio_enabled ? 1 : 0;
         variable_item_set_current_value_index(item, value_index);
         variable_item_set_current_value_text(item, combobox_text[value_index]);
     }

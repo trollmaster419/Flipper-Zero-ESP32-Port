@@ -115,6 +115,13 @@ static FuriHalSubGhzContext furi_hal_subghz = {
 
 static volatile uint32_t furi_hal_subghz_rx_irq_count = 0;
 
+/* Pre-allocated internal-DRAM stack buffer for the SubGhzFileEncoderWorker thread.
+ * The worker reads RAW files from flash with cache-disabled ops, which requires its
+ * stack to be in internal DRAM (PSRAM is unreachable during those intervals).
+ * Allocated early by furi_hal_subghz_set_spi_config() when internal DRAM is fresh. */
+#define SUBGHZ_WORKER_STACK_SIZE 4096
+static void* g_worker_stack = NULL;
+
 static void furi_hal_subghz_capture_gpio_callback(void* context) {
     UNUSED(context);
     furi_hal_subghz_rx_irq_count++;
@@ -500,6 +507,29 @@ void furi_hal_subghz_set_spi_config(uint8_t config) {
     furi_hal_spi_bus_handle_deinit(&furi_hal_spi_bus_handle_subghz);
     furi_hal_spi_bus_handle_subghz.bus->initialized = false;
     furi_hal_subghz_init();
+
+    /* Pre-allocate a 4096-byte internal DRAM buffer for the encoder worker's
+     * thread stack. Must happen early (when DRAM is still unfragmented) because
+     * the worker reads flash files while the PSRAM cache is disabled — a PSRAM-
+     * resident stack would DoubleException. */
+    if(!g_worker_stack) {
+        g_worker_stack = heap_caps_malloc(SUBGHZ_WORKER_STACK_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if(!g_worker_stack) {
+            ESP_LOGE(TAG, "Failed to pre-allocate worker stack (%u bytes from internal DRAM)", SUBGHZ_WORKER_STACK_SIZE);
+        }
+    }
+
+    /* Pre-allocate and immediately free the RMT async TX channel to force early
+     * initialization of the RMT platform lock (_lock_t mutex in s_platform).
+     * The RMT driver lazily creates this mutex on the first rmt_new_tx_channel()
+     * call. If deferred until TX time, the internal pvPortMalloc inside
+     * lock_init_generic() may OOM-abort because internal DRAM is fragmented.
+     * Once initialized, the mutex handle persists even after the channel is freed,
+     * so no pvPortMalloc is needed on subsequent channel creations. */
+    if(!furi_hal_subghz.async_tx.channel) {
+        furi_hal_subghz_async_tx_alloc_backend(&furi_hal_subghz.async_tx);
+        furi_hal_subghz_async_tx_free_backend(&furi_hal_subghz.async_tx);
+    }
 }
 
 void furi_hal_subghz_sleep(void) {
@@ -919,4 +949,14 @@ void furi_hal_subghz_stop_async_tx(void) {
     furi_hal_subghz.async_tx_complete = true;
     furi_hal_subghz.state = FuriHalSubGhzStateIdle;
     furi_hal_subghz_idle();
+}
+
+void* furi_hal_subghz_get_worker_stack(void) {
+    /* Borrowed, NOT transferred: the buffer is a persistent singleton reused by
+     * every encoder-worker instance. furi_thread_set_stack_buffer() treats it as
+     * externally-owned and never frees it, so it stays valid across repeated RAW
+     * transmits in one session. (Previously this nulled g_worker_stack and the
+     * thread teardown freed it, so the 2nd transmit fell back to a PSRAM stack
+     * and DoubleExceptioned on the first cache-disabled flash read.) */
+    return g_worker_stack;
 }

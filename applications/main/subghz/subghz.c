@@ -1,6 +1,7 @@
 /* Abandon hope, all ye who enter here. */
 
 #include <furi/core/log.h>
+#include <btshim.h>
 #include <subghz/types.h>
 #include <lib/toolbox/path.h>
 #include <float_tools.h>
@@ -404,6 +405,22 @@ void subghz_free(SubGhz* subghz, bool alloc_for_tx_only) {
 }
 
 int32_t subghz_app(void* p) {
+    /* Reclaim internal DRAM from the BLE stack for the lifetime of the SubGhz app.
+     * On the classic ESP32 the internal RAM pool can't hold Bluedroid AND the full
+     * SubGhz UI at once, so allocating the app while BLE is resident OOM-crashes in
+     * furi_mutex_alloc. Tear BLE down here (reversible via bt_start_stack on exit).
+     * USB qFlipper (UART0) is unaffected. Skipped when:
+     *   - BLE is already off (don't turn it on for users who keep it disabled), or
+     *   - SubGhz was launched over RPC (the controlling session may itself be BLE;
+     *     killing the stack would drop the transport that launched us). */
+    bool is_rpc_launch = (p && strncmp((const char*)p, "RPC ", 4) == 0);
+    Bt* bt = furi_record_open(RECORD_BT);
+    bool bt_reclaimed = false;
+    if(!is_rpc_launch && bt_is_enabled(bt)) {
+        bt_stop_stack(bt);
+        bt_reclaimed = true;
+    }
+
     bool alloc_for_tx;
     if(p && strlen(p)) {
         alloc_for_tx = true;
@@ -467,6 +484,12 @@ int32_t subghz_app(void* p) {
     furi_hal_power_suppress_charge_exit();
 
     subghz_free(subghz, alloc_for_tx);
+
+    /* Bring the BLE stack back up now that SubGhz has freed its memory. */
+    if(bt_reclaimed) {
+        bt_start_stack(bt);
+    }
+    furi_record_close(RECORD_BT);
 
     return 0;
 }

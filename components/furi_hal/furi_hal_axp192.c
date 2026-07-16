@@ -45,6 +45,9 @@ static const char* TAG = "AXP192";
 #define AXP192_BATT_DISCHG_CURR_H   0x7C
 #define AXP192_BATT_DISCHG_CURR_L   0x7D
 
+#define AXP192_LDOIO_CTRL           0x92
+#define AXP192_LDOIO_ENABLE         (1 << 2)   /* bit 2: LDOio output enable */
+
 /* ─── State ────────────────────────────────────────────────────────── */
 
 static bool axp192_present = false;
@@ -78,6 +81,18 @@ static bool axp192_i2c_read_buf(i2c_port_t port, uint8_t reg, uint8_t* buf, size
         i2c_master_read_byte(cmd, &buf[i], I2C_MASTER_ACK);
     }
     i2c_master_read_byte(cmd, &buf[len - 1], I2C_MASTER_NACK);
+    i2c_master_stop(cmd);
+    esp_err_t err = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(AXP_I2C_TIMEOUT_MS));
+    i2c_cmd_link_delete(cmd);
+    return err == ESP_OK;
+}
+
+static bool axp192_i2c_write(i2c_port_t port, uint8_t reg, uint8_t val) {
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (AXP_I2C_ADDR << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(cmd, reg, true);
+    i2c_master_write_byte(cmd, val, true);
     i2c_master_stop(cmd);
     esp_err_t err = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(AXP_I2C_TIMEOUT_MS));
     i2c_cmd_link_delete(cmd);
@@ -216,4 +231,19 @@ uint16_t furi_hal_axp192_get_discharge_current_ma(void) {
     uint16_t raw = axp192_read_12bit(AXP192_BATT_DISCHG_CURR_H);
     /* 0.5 mA per LSB */
     return raw / 2u;
+}
+
+void furi_hal_axp192_enable_ldoio(bool enable) {
+    if(!axp192_present) return;
+    uint8_t val = 0;
+    /* Read-modify-write: preserve other LDOio control bits */
+    if(axp192_i2c_read(I2C_NUM_1, AXP192_LDOIO_CTRL, &val) ||
+       axp192_i2c_read(I2C_NUM_0, AXP192_LDOIO_CTRL, &val)) {
+        if(enable) {
+            val |= AXP192_LDOIO_ENABLE;
+        } else {
+            val &= ~AXP192_LDOIO_ENABLE;
+        }
+        axp192_i2c_write(I2C_NUM_1, AXP192_LDOIO_CTRL, val);
+    }
 }

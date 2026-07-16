@@ -145,6 +145,7 @@ static int32_t subghz_file_encoder_worker_thread(void* context) {
         FURI_LOG_I(TAG, "Start transmission");
     } while(0);
 
+    uint32_t yield_counter = 0;
     while(res && instance->worker_running) {
         size_t stream_free_byte = furi_stream_buffer_spaces_available(instance->stream);
         if((stream_free_byte / sizeof(int32_t)) >= SUBGHZ_FILE_ENCODER_LOAD) {
@@ -155,6 +156,8 @@ static int32_t subghz_file_encoder_worker_thread(void* context) {
                     subghz_file_encoder_worker_add_level_duration(instance, LEVEL_DURATION_RESET);
                     break;
                 }
+                /* Yield periodically to prevent task WDT timeout */
+                if(++yield_counter % 64 == 0) furi_thread_yield();
             } else {
                 subghz_file_encoder_worker_add_level_duration(instance, LEVEL_DURATION_RESET);
                 break;
@@ -190,8 +193,25 @@ static int32_t subghz_file_encoder_worker_thread(void* context) {
 SubGhzFileEncoderWorker* subghz_file_encoder_worker_alloc(void) {
     SubGhzFileEncoderWorker* instance = malloc(sizeof(SubGhzFileEncoderWorker));
 
-    instance->thread =
-        furi_thread_alloc_ex("SubGhzFEWorker", 2048, subghz_file_encoder_worker_thread, instance);
+    instance->thread = furi_thread_alloc();
+    furi_thread_set_name(instance->thread, "SubGhzFEWorker");
+    furi_thread_set_callback(instance->thread, subghz_file_encoder_worker_thread);
+    furi_thread_set_context(instance->thread, instance);
+
+    /* Use pre-allocated internal-DRAM stack buffer if available (set up by
+     * furi_hal_subghz_set_spi_config() early in the app lifecycle, when internal
+     * DRAM was still unfragmented). The worker reads RAW files from flash with
+     * the cache disabled — a PSRAM resident stack would crash the moment it
+     * touches flash. Preferring the pre-allocated buffer over PSRAM avoids this. */
+    void* stack_buf = furi_hal_subghz_get_worker_stack();
+    if(stack_buf) {
+        furi_thread_set_stack_buffer(instance->thread, stack_buf, 4096);
+    } else {
+        /* Fallback: standard allocation (may end up in PSRAM, risk of crash
+         * on flash ops). */
+        furi_thread_set_stack_size(instance->thread, 2048);
+    }
+
     instance->stream = furi_stream_buffer_alloc(sizeof(int32_t) * 2048, sizeof(int32_t));
 
     instance->storage = furi_record_open(RECORD_STORAGE);

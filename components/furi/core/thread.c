@@ -68,6 +68,7 @@ struct FuriThread {
     bool is_service;
     bool heap_trace_enabled;
     bool stack_from_pool; /* stack came from the registered exec-pool allocator, not the heap */
+    bool stack_borrowed; /* stack buffer is externally owned (set_stack_buffer) — never freed here */
 };
 
 /* Optional external stack allocator (registered by the FAP loader's exec pool). Used as a
@@ -86,13 +87,17 @@ void furi_thread_set_ext_stack_allocator(
 
 static void furi_thread_free_stack(FuriThread* thread) {
     if(!thread->stack_buffer) return;
-    if(thread->stack_from_pool) {
+    if(thread->stack_borrowed) {
+        /* Externally-owned buffer (furi_thread_set_stack_buffer) — the caller
+         * retains ownership and reuses it, so we must not free it here. */
+    } else if(thread->stack_from_pool) {
         if(furi_thread_ext_stack_free) furi_thread_ext_stack_free(thread->stack_buffer);
     } else {
         heap_caps_free(thread->stack_buffer);
     }
     thread->stack_buffer = NULL;
     thread->stack_from_pool = false;
+    thread->stack_borrowed = false;
 }
 
 // IMPORTANT: container MUST be the FIRST struct member
@@ -359,6 +364,22 @@ void furi_thread_set_stack_size(FuriThread* thread, size_t stack_size) {
         thread->stack_buffer = heap_caps_malloc(stack_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     }
     thread->stack_size = stack_size;
+}
+
+void furi_thread_set_stack_buffer(FuriThread* thread, void* buffer, size_t stack_size) {
+    furi_check(thread);
+    furi_check(thread->state == FuriThreadStateStopped);
+    furi_check(buffer);
+    furi_check(stack_size);
+    furi_check(stack_size <= THREAD_MAX_STACK_SIZE);
+    furi_check(stack_size % sizeof(StackType_t) == 0);
+    furi_check(thread->is_service == false);
+
+    furi_thread_free_stack(thread);
+    thread->stack_buffer = buffer;
+    thread->stack_size = stack_size;
+    thread->stack_from_pool = false;
+    thread->stack_borrowed = true;
 }
 
 void furi_thread_set_callback(FuriThread* thread, FuriThreadCallback callback) {
