@@ -77,6 +77,11 @@ static struct {
 
 static volatile InfraredState ir_state = InfraredStateIdle;
 
+/* Debug: monotonically increasing send sequence, incremented in
+ * async_tx_start() before the pump task is created so the task's own log
+ * lines carry the same seq# as the setup that created it. */
+static volatile uint32_t ir_tx_send_seq = 0;
+
 /* ---- RX Implementation ---- */
 
 static void ir_rx_restart_timeout(void) {
@@ -141,6 +146,13 @@ void furi_hal_infrared_async_rx_start(void) {
     FURI_LOG_E("IR", "Board has no IR support");
     return;
 #endif
+    if(IR_RX_GPIO < 0) {
+        /* Some boards (e.g. M5StickC Plus2) have a TX emitter but no receiver.
+         * rmt_new_rx_channel() aborts on an invalid GPIO, so bail out instead
+         * of crashing IR Learn. */
+        FURI_LOG_E("IR", "Board has no IR RX pin; RX unavailable");
+        return;
+    }
 
     /* Configure RMT RX channel */
     rmt_rx_channel_config_t rx_chan_config = {
@@ -181,7 +193,11 @@ void furi_hal_infrared_async_rx_start(void) {
 }
 
 void furi_hal_infrared_async_rx_stop(void) {
-    furi_check(ir_state == InfraredStateAsyncRx);
+    /* Tolerant of start() having bailed (no-IR board / no RX pin): the channel
+     * was never created, so there is nothing to tear down. */
+    if(ir_state != InfraredStateAsyncRx) {
+        return;
+    }
 
     ir_state = InfraredStateIdle;
 
@@ -200,6 +216,16 @@ void furi_hal_infrared_async_rx_stop(void) {
 
 void furi_hal_infrared_async_rx_set_timeout(uint32_t timeout_us) {
     ir_rx.timeout_us = timeout_us;
+
+    /* Keep the RMT idle (frame-end) threshold in sync with the configured
+     * timeout, clamped to the RMT HW limit (32.7ms at 1MHz). The running RX
+     * re-reads ir_rx.rx_config when it re-issues rmt_receive() at each frame
+     * boundary, so this applies without interrupting the current receive.
+     * The worker calls set_timeout() AFTER async_rx_start(), so start()'s own
+     * computation cannot be the only place this is maintained. */
+    uint32_t max_ns = timeout_us > 0 ? timeout_us * 1000 : 20000 * 1000;
+    if(max_ns > 32000 * 1000) max_ns = 32000 * 1000;
+    ir_rx.rx_config.signal_range_max_ns = max_ns;
 
     /* If RX is already running, create/update the GPTimer for timeout */
     if(ir_state == InfraredStateAsyncRx || ir_state == InfraredStateIdle) {
@@ -265,15 +291,81 @@ void furi_hal_infrared_async_rx_set_timeout_isr_callback(
  * "IR TX encoder" that pulls data from the callback.
  */
 
-/* A raw signal can hold up to MAX_TIMINGS_AMOUNT (1024) timings = 512 RMT
- * symbols. The whole packet MUST be sent in a single rmt_transmit() call:
- * splitting it into several transactions makes the RMT channel go idle
- * between them, inserting timing gaps mid-frame that corrupt the waveform so
- * the receiver no longer recognises it (raw/learned signals only — decoded
- * protocol packets are short). The RMT driver does internal ping-pong refill
- * from this buffer, so one transaction is gapless even though the buffer is
- * larger than mem_block_symbols. */
-#define IR_TX_MAX_SYMBOLS 600
+/* A raw signal can hold up to MAX_TIMINGS_AMOUNT (1024) timings = 512 mark/
+ * space pairs. Long decoded-protocol gaps (NEC repeat ~98ms, Samsung ~145ms,
+ * Kaseikyo ~130ms, SIRC ~45ms) and the 180ms raw lead-in space exceed the
+ * 15-bit RMT phase field (32.7ms at 1MHz) and are split into extra symbols by
+ * ir_tx_emit_pair() below, so leave generous headroom.
+ *
+ * The whole packet MUST be sent in a single rmt_transmit() call: splitting it
+ * into several transactions makes the RMT channel go idle between them,
+ * inserting timing gaps mid-frame that corrupt the waveform so the receiver
+ * no longer recognises it. The RMT driver does internal ping-pong refill from
+ * this buffer, so one transaction is gapless even though the buffer is larger
+ * than mem_block_symbols. */
+#define IR_TX_MAX_SYMBOLS 1024
+
+/* RMT symbol phase fields are 15-bit (max 0x7FFF ticks = 32.7ms at 1MHz);
+ * longer runs must be split or they silently truncate. */
+#define IR_RMT_TX_MAX_PHASE_TICKS 0x7FFF
+
+/* Emit `duration` ticks of `level` into the symbol stream, splitting runs
+ * longer than the 15-bit RMT phase field into several symbols. Unused phase
+ * slots are padded with a 1-tick idle so the RMT never sees a zero duration.
+ * A split space is seamless (idle-to-idle); a split mark loses 1us of carrier
+ * per boundary, which IR receivers' AGC filters out. Returns the new symbol
+ * count (unchanged if the buffer is full). */
+static size_t ir_tx_emit_run(
+    rmt_symbol_word_t* symbols,
+    size_t sym_count,
+    size_t sym_capacity,
+    uint32_t duration,
+    bool level) {
+    const uint32_t level_bit = level ? 1 : 0;
+
+    while(duration > IR_RMT_TX_MAX_PHASE_TICKS && sym_count < sym_capacity) {
+        symbols[sym_count].duration0 = IR_RMT_TX_MAX_PHASE_TICKS;
+        symbols[sym_count].level0 = level_bit;
+        symbols[sym_count].duration1 = 1;
+        symbols[sym_count].level1 = 0;
+        sym_count++;
+        duration -= IR_RMT_TX_MAX_PHASE_TICKS;
+    }
+
+    if(sym_count < sym_capacity) {
+        symbols[sym_count].duration0 = duration > 0 ? duration : 1;
+        symbols[sym_count].level0 = level_bit;
+        symbols[sym_count].duration1 = 1;
+        symbols[sym_count].level1 = 0;
+        sym_count++;
+    }
+
+    return sym_count;
+}
+
+/* Emit one mark followed by one space. When both fit in the 15-bit phase
+ * fields they share a single symbol (identical to the pre-split layout);
+ * longer runs go through ir_tx_emit_run(). Returns the new symbol count. */
+static size_t ir_tx_emit_pair(
+    rmt_symbol_word_t* symbols,
+    size_t sym_count,
+    size_t sym_capacity,
+    uint32_t mark_us,
+    bool mark_level,
+    uint32_t space_us,
+    bool space_level) {
+    if(sym_count < sym_capacity && mark_us <= IR_RMT_TX_MAX_PHASE_TICKS &&
+       space_us <= IR_RMT_TX_MAX_PHASE_TICKS) {
+        symbols[sym_count].duration0 = mark_us;
+        symbols[sym_count].level0 = mark_level ? 1 : 0;
+        symbols[sym_count].duration1 = space_us > 0 ? space_us : 1;
+        symbols[sym_count].level1 = space_level ? 1 : 0;
+        return sym_count + 1;
+    }
+
+    sym_count = ir_tx_emit_run(symbols, sym_count, sym_capacity, mark_us, mark_level);
+    return ir_tx_emit_run(symbols, sym_count, sym_capacity, space_us, space_level);
+}
 
 static void ir_tx_task(void* arg) {
     (void)arg;
@@ -330,12 +422,11 @@ static void ir_tx_task(void* arg) {
                 }
             }
 
-            /* Build RMT symbol: duration0=mark, duration1=space */
-            symbols[sym_count].duration0 = duration_mark;
-            symbols[sym_count].level0 = level_mark ? 1 : 0;
-            symbols[sym_count].duration1 = duration_space > 0 ? duration_space : 1;
-            symbols[sym_count].level1 = level_space ? 1 : 0;
-            sym_count++;
+            /* Emit the mark and the space, splitting runs that exceed the
+             * 15-bit RMT phase width (see ir_tx_emit_pair). */
+            sym_count = ir_tx_emit_pair(
+                symbols, sym_count, IR_TX_MAX_SYMBOLS,
+                duration_mark, level_mark, duration_space, level_space);
 
             if(state_space == FuriHalInfraredTxGetDataStateDone) {
                 packet_end = true;
@@ -460,6 +551,13 @@ void furi_hal_infrared_async_tx_start(uint32_t freq, float duty_cycle) {
 }
 
 void furi_hal_infrared_async_tx_wait_termination(void) {
+    /* Tolerant of TX never having started: on boards without IR the start()
+     * guard leaves the state Idle, and the pump-task-creation failure path in
+     * async_tx_start() already moved to AsyncTxStopped and gave the semaphore.
+     * Tearing down the (NULL) channel here would fault. */
+    if(ir_state == InfraredStateIdle) {
+        return;
+    }
     furi_check(ir_state >= InfraredStateAsyncTx);
     furi_check(ir_state < InfraredStateMAX);
 
@@ -480,6 +578,9 @@ void furi_hal_infrared_async_tx_wait_termination(void) {
 }
 
 void furi_hal_infrared_async_tx_stop(void) {
+    if(ir_state == InfraredStateIdle) {
+        return;
+    }
     furi_check(ir_state >= InfraredStateAsyncTx);
     furi_check(ir_state < InfraredStateMAX);
 

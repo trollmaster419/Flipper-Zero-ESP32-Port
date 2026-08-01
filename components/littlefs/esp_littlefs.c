@@ -377,13 +377,17 @@ static struct dirent *vfs_readdir(void *ctx, DIR *pdir) {
 
     lfs_op_lock();
     int ret = lfs_dir_read(lfs_ptr, dir, &info);
+    if (ret > 0) {
+        /* Copy the name while still holding the lock: `info` is a static
+         * buffer shared by every readdir, so a concurrent iteration of a
+         * different directory can overwrite it the moment we unlock. */
+        entry.d_ino = 0;
+        entry.d_type = (info.type == LFS_TYPE_DIR) ? DT_DIR : DT_REG;
+        strncpy(entry.d_name, info.name, sizeof(entry.d_name) - 1);
+        entry.d_name[sizeof(entry.d_name) - 1] = '\0';
+    }
     lfs_op_unlock();
     if (ret <= 0) return NULL;
-
-    entry.d_ino = 0;
-    entry.d_type = (info.type == LFS_TYPE_DIR) ? DT_DIR : DT_REG;
-    strncpy(entry.d_name, info.name, sizeof(entry.d_name) - 1);
-    entry.d_name[sizeof(entry.d_name) - 1] = '\0';
     return &entry;
 }
 
@@ -396,6 +400,14 @@ static int vfs_readdir_r(void *ctx, DIR *pdir, struct dirent *entry,
     static struct lfs_info info;
     lfs_op_lock();
     int ret = lfs_dir_read(lfs_ptr, dir, &info);
+    if (ret > 0) {
+        /* Copy the name while still holding the lock (see vfs_readdir). */
+        memset(entry, 0, sizeof(struct dirent));
+        entry->d_ino = 0;
+        entry->d_type = (info.type == LFS_TYPE_DIR) ? DT_DIR : DT_REG;
+        strncpy(entry->d_name, info.name, sizeof(entry->d_name) - 1);
+        entry->d_name[sizeof(entry->d_name) - 1] = '\0';
+    }
     lfs_op_unlock();
     if (ret <= 0) {
         *out_entry = NULL;
@@ -403,11 +415,6 @@ static int vfs_readdir_r(void *ctx, DIR *pdir, struct dirent *entry,
         return 0;
     }
 
-    memset(entry, 0, sizeof(struct dirent));
-    entry->d_ino = 0;
-    entry->d_type = (info.type == LFS_TYPE_DIR) ? DT_DIR : DT_REG;
-    strncpy(entry->d_name, info.name, sizeof(entry->d_name) - 1);
-    entry->d_name[sizeof(entry->d_name) - 1] = '\0';
     *out_entry = entry;
     return 0;
 }

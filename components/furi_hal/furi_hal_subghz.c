@@ -111,7 +111,9 @@ static FuriHalSubGhzContext furi_hal_subghz = {
 #define FURI_HAL_SUBGHZ_RMT_RESOLUTION_HZ     (1000000u)
 #define FURI_HAL_SUBGHZ_RMT_MEM_BLOCK_SYMBOLS (64u)
 #define FURI_HAL_SUBGHZ_RMT_TX_QUEUE_DEPTH    (1u)
-#define FURI_HAL_SUBGHZ_RMT_MAX_DURATION_TICKS (UINT16_MAX)
+/* RMT duration fields are 15-bit (max 0x7FFF ticks); UINT16_MAX would
+ * truncate long marks/spaces in raw TX. */
+#define FURI_HAL_SUBGHZ_RMT_MAX_DURATION_TICKS (0x7FFF)
 
 static volatile uint32_t furi_hal_subghz_rx_irq_count = 0;
 

@@ -356,6 +356,12 @@ bool archive_is_home(ArchiveBrowserView* browser) {
 
 const char* archive_get_name(ArchiveBrowserView* browser) {
     ArchiveFile_t* selected = archive_get_current_file(browser);
+    if(selected == NULL) {
+        /* No selection (e.g. the index went stale after a background reload
+         * of the file list); return an empty name instead of dereferencing
+         * NULL. */
+        return "";
+    }
     return furi_string_get_cstr(selected->path);
 }
 

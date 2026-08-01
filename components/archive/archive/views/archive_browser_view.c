@@ -100,8 +100,17 @@ static void render_item_menu(Canvas* canvas, ArchiveBrowserViewModel* model) {
         const char* item_pin = "Pin";
 
         // Need init context menu
-        ArchiveFile_t* selected =
-            files_array_get(model->files, model->item_idx - model->array_offset);
+        const int32_t selected_idx = model->item_idx - model->array_offset;
+        if((selected_idx < 0) ||
+           (selected_idx >= (int32_t)files_array_size(model->files))) {
+            /* No selectable file (e.g. the menu was opened on an empty
+             * folder): close the menu instead of indexing out of bounds and
+             * crashing on the array assert. */
+            model->menu = false;
+            menu_array_reset(model->context_menu);
+            return;
+        }
+        ArchiveFile_t* selected = files_array_get(model->files, (size_t)selected_idx);
 
         if((selected->fav) || (model->tab_idx == ArchiveTabFavorites)) {
             item_pin = "Unpin";
@@ -499,15 +508,19 @@ static inline void
             browser->view,
             ArchiveBrowserViewModel * model,
             {
-                ArchiveFile_t* selected =
-                    files_array_get(model->files, model->item_idx - model->array_offset);
+                const int32_t selected_idx = model->item_idx - model->array_offset;
+                if((selected_idx >= 0) &&
+                   (selected_idx < (int32_t)files_array_size(model->files))) {
+                    ArchiveFile_t* selected =
+                        files_array_get(model->files, (size_t)selected_idx);
 
-                if(model->tab_idx != ArchiveTabFavorites) {
-                    model->menu_file_manage = !model->menu_file_manage;
-                    model->menu_idx = 0;
-                    menu_array_reset(model->context_menu);
-                    selected->fav =
-                        archive_is_favorite("%s", furi_string_get_cstr(selected->path));
+                    if(model->tab_idx != ArchiveTabFavorites) {
+                        model->menu_file_manage = !model->menu_file_manage;
+                        model->menu_idx = 0;
+                        menu_array_reset(model->context_menu);
+                        selected->fav =
+                            archive_is_favorite("%s", furi_string_get_cstr(selected->path));
+                    }
                 }
             },
             true);
